@@ -1053,8 +1053,7 @@ impl DarklyEngine {
                 StrokeEngine::random_seed(),
             );
             if let Some(dab) = canonical_dab {
-                let accepted = stroke_engine.begin_canonical_color(dab.color_rgba8);
-                debug_assert!(accepted);
+                debug_assert!(stroke_engine.begin_canonical_color(dab.color_rgba8));
             }
             self.brush_stroke_engine = Some(stroke_engine);
 
