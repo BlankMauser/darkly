@@ -66,6 +66,11 @@ pub fn register() -> BrushNodeRegistration {
                 .with_unit(UnitType::Percent)
                 .with_icon("fa6-solid:feather")
                 .with_description("Edge softness (0% = hard, 100% = feathered)"),
+            PortDef::input("coverage", BrushWireType::Enum)
+                .with_enum_options(["Smooth", "4x4 Samples"])
+                .with_value(InputValue::Int(0))
+                .with_label("Coverage")
+                .with_description("Edge rasterizer. 4x4 Samples is deterministic across DoughDraw replay backends."),
             // amplitude is meaningful for Sine and Perlin (modulates the
             // bumpy boundary); the Superformula's amplitude is implicit in
             // its n1/n2/n3 instead, so we hide this knob for it.
@@ -235,6 +240,7 @@ impl BrushNodeEvaluator for ShapeEvaluator {
         let n3 = cctx.input("n3").as_f32();
         let aspect = cctx.input("aspect").as_f32();
         let softness = cctx.input("softness").as_f32();
+        let coverage = cctx.input("coverage").enum_index();
 
         // Emit the shape evaluation as an inline block inside
         // `fs_main` rather than a top-level function — the input
@@ -251,7 +257,20 @@ impl BrushNodeEvaluator for ShapeEvaluator {
         // softness == 0.
         let params_ident = cctx.ident("circle_params");
         let circle_ident = cctx.ident("circle");
-        let body = format!(
+        let body = if coverage == 1 {
+            format!(
+                "    var {circle_ident}_inside: u32 = 0u;\n\
+                 \x20   for (var sample_y: u32 = 0u; sample_y < 4u; sample_y = sample_y + 1u) {{\n\
+                 \x20       for (var sample_x: u32 = 0u; sample_x < 4u; sample_x = sample_x + 1u) {{\n\
+                 \x20           let sample_offset = (vec2<f32>(f32(sample_x), f32(sample_y)) + vec2<f32>(0.5)) * 0.25 - vec2<f32>(0.5);\n\
+                 \x20           let sample_local = (local + sample_offset) * d.inv_radius_target_px;\n\
+                 \x20           {circle_ident}_inside = {circle_ident}_inside + select(0u, 1u, dot(sample_local, sample_local) <= 1.0);\n\
+                 \x20       }}\n\
+                 \x20   }}\n\
+                 \x20   let {circle_ident}: f32 = f32({circle_ident}_inside) / 16.0;\n",
+            )
+        } else {
+            format!(
             "    let {params_ident}: ShapeParams = ShapeParams(\n\
              \x20       {algorithm}u,\n\
              \x20       max(({amplitude}), 0.0),\n\
@@ -267,7 +286,8 @@ impl BrushNodeEvaluator for ShapeEvaluator {
              \x20   );\n\
              \x20   let {circle_ident}_band: f32 = max(clamp(({softness}), 0.0, 1.0), 0.004);\n\
              \x20   let {circle_ident}: f32 = shape_coverage({params_ident}, theta, local_dist, {circle_ident}_band);\n",
-        );
+            )
+        };
         wgsl.body = body;
         wgsl.outputs.insert("mask".into(), circle_ident);
         Ok(wgsl)

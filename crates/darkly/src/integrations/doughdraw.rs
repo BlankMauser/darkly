@@ -6,7 +6,7 @@
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::brush::{self, wire::BrushWireType};
+use crate::brush::{self, input_value::InputValue, wire::BrushWireType};
 use crate::nodegraph::Graph;
 
 pub const DOUGHDRAW_BRUSH_PROGRAM_FORMAT_V1: &str = "doughdraw.brush-execution-program.v1";
@@ -57,6 +57,17 @@ pub fn compile_brush_program_v1(
     graph
         .set_port_default(&settings, "spacing", spacing)
         .map_err(|_| DoughDrawBrushProgramError::Invalid("Darkly spacing input rejected"))?;
+    let circle = graph
+        .nodes()
+        .values()
+        .find(|node| node.type_id == "circle")
+        .map(|node| node.id.clone())
+        .ok_or(DoughDrawBrushProgramError::Invalid(
+            "Darkly default graph has no circle",
+        ))?;
+    graph
+        .set_port_value(&circle, "coverage", InputValue::Int(1))
+        .map_err(|_| DoughDrawBrushProgramError::Invalid("Darkly coverage input rejected"))?;
     brush::compile_graph(&graph)
         .map_err(|_| DoughDrawBrushProgramError::Invalid("Darkly graph did not compile"))?;
     Ok(graph)
@@ -127,7 +138,16 @@ mod tests {
 
     #[test]
     fn compiles_the_supported_round_program() {
-        assert!(compile_brush_program_v1(&unit_round()).is_ok());
+        let graph = compile_brush_program_v1(&unit_round()).unwrap();
+        let circle = graph
+            .nodes()
+            .values()
+            .find(|node| node.type_id == "circle")
+            .unwrap();
+        assert!(circle
+            .ports
+            .iter()
+            .any(|port| { port.name == "coverage" && port.value == InputValue::Int(1) }));
     }
 
     #[test]
