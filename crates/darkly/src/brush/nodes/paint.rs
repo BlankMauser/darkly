@@ -60,9 +60,8 @@ const MAX_UNIFORM_BYTES: usize = 1024;
 /// Per-brush resources built on the first `flush_dabs` call for a
 /// brush with a given `topology_hash`. Cached on [`PaintPipeline`].
 struct PerBrushPipeline {
-    /// Per-dab pipeline. Its accumulation policy is terminal-specific — the
-    /// ordinary terminal uses premultiplied source-over, while DoughDraw's
-    /// precise terminal uses maximum coverage. Engine-level
+    /// Per-dab pipeline. Always premultiplied source-over — the scratch
+    /// is a coverage accumulator and only paints alpha *up*. Engine-level
     /// paint-vs-erase is a stroke decision applied at commit by
     /// `commit_brush_dab`, not here. (Branching the per-dab pass on
     /// `blend_mode` to a destination-out blend was a regression: the
@@ -672,9 +671,9 @@ impl BrushNodeEvaluator for PaintEvaluator {
             gpu.queue
                 .write_buffer(&per_brush.dabs_buffer, 0, &dab_bytes);
 
-            // The terminal owns per-dab accumulation. Paint-vs-erase still
-            // routes through `gpu.blend_mode` in `commit_brush_dab`; see
-            // `paint_pipeline`'s doc on `PerBrushPipeline`.
+            // Always source-over at per-dab. Paint-vs-erase routes through
+            // `gpu.blend_mode` in `commit_brush_dab`; see `paint_pipeline`'s
+            // doc on `PerBrushPipeline`.
             let pipeline = &per_brush.paint_pipeline;
             let mut pass = gpu.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("paint-flush"),

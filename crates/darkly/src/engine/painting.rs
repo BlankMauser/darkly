@@ -15,7 +15,6 @@ use crate::coord::CanvasRect;
 use crate::gpu::layer_readback;
 use crate::gpu::paint_target::{GpuPaintTarget, PaintPipelines};
 use crate::gpu::region_store::UndoRegionEntry;
-use crate::integrations::doughdraw::DoughDrawCanonicalRoundDabV1;
 use crate::layer::LayerId;
 use crate::undo::GpuRegionAction;
 
@@ -873,107 +872,6 @@ impl DarklyEngine {
         canvas_w: u32,
         canvas_h: u32,
     ) {
-        self.brush_stroke_to_inner(
-            layer_id,
-            x,
-            y,
-            pressure,
-            x_tilt,
-            y_tilt,
-            rotation,
-            tangential_pressure,
-            time_ms,
-            color,
-            canvas_w,
-            canvas_h,
-            None,
-        );
-    }
-
-    /// Apply one DoughDraw-resolved round dab to the active stroke. Its
-    /// spacing has already been decided by DoughDraw, so this path never
-    /// invokes Darkly stabilization or interpolation.
-    pub fn doughdraw_canonical_round_dab(
-        &mut self,
-        dab: DoughDrawCanonicalRoundDabV1,
-    ) -> Result<(), &'static str> {
-        dab.validate().map_err(|_| "invalid canonical dab")?;
-        let layer_id = self.active_stroke_layer.ok_or("no active stroke")?;
-        if !self.doc.is_node_editable(layer_id) || !self.is_node_paintable(layer_id) {
-            return Err("active layer is not paintable");
-        }
-        let graph = self.active_brush_graph();
-        let has_precise_terminal = crate::brush::find_terminal(&graph)
-            .ok()
-            .and_then(|terminal| graph.nodes().get(&terminal))
-            .is_some_and(|node| node.type_id == crate::brush::nodes::paint_precise::TYPE_ID);
-        if !has_precise_terminal {
-            return Err("DoughDraw requires the precise paint terminal");
-        }
-        if let Some(engine) = self.brush_stroke_engine.as_mut() {
-            if !engine.begin_canonical_color(dab.color_rgba8) {
-                return Err("canonical dabs require one fixed stroke colour");
-            }
-        }
-
-        let [x, y] = dab.center_px();
-        self.ensure_layer_covers_dab(layer_id, x, y);
-
-        // `begin_stroke` defers this snapshot until the first dab. Keep that
-        // undo boundary identical for the adapter's direct ingress.
-        if self.scratch_snapshot.is_none() {
-            self.flush_pending_undo_commit();
-            let (frame, format) = match self.compositor.node_texture(layer_id) {
-                Some(texture) => (texture.canvas_frame(), texture.format()),
-                None => return Err("active layer has no texture"),
-            };
-            let saved_rect = frame.canvas_extent;
-            self.scratch_snapshot = Some(self.gpu.encode_ret("stroke-begin", |encoder| {
-                self.region_scratch.save_region(
-                    &self.gpu.device,
-                    encoder,
-                    &frame,
-                    format,
-                    saved_rect,
-                )
-            }));
-        }
-
-        self.brush_stroke_to_inner(
-            layer_id,
-            x,
-            y,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            dab.color(),
-            self.compositor.canvas_width(),
-            self.compositor.canvas_height(),
-            Some(dab),
-        );
-        self.compositor.mark_dirty();
-        Ok(())
-    }
-
-    fn brush_stroke_to_inner(
-        &mut self,
-        layer_id: LayerId,
-        x: f32,
-        y: f32,
-        pressure: f32,
-        x_tilt: f32,
-        y_tilt: f32,
-        rotation: f32,
-        tangential_pressure: f32,
-        time_ms: f64,
-        color: [f32; 4],
-        canvas_w: u32,
-        canvas_h: u32,
-        canonical_dab: Option<DoughDrawCanonicalRoundDabV1>,
-    ) {
         // True on the lazy-init path below — the terminal's `begin_stroke`
         // hook must run once before the first dab to initialise the scratch.
         let mut need_begin_stroke = false;
@@ -1041,21 +939,15 @@ impl DarklyEngine {
                     inner
                 };
 
-            let mut stroke_engine = StrokeEngine::new(
+            self.brush_stroke_engine = Some(StrokeEngine::new(
                 runner,
                 color,
                 self.active_spacing_config(),
-                canonical_dab
-                    .map(|dab| dab.radius_px() * 2.0 / crate::brush::DAB_REFERENCE_SIZE as f32)
-                    .unwrap_or_else(|| self.active_base_size()),
+                self.active_base_size(),
                 stabilizer,
                 clone_source_anchor,
                 StrokeEngine::random_seed(),
-            );
-            if let Some(dab) = canonical_dab {
-                debug_assert!(stroke_engine.begin_canonical_color(dab.color_rgba8));
-            }
-            self.brush_stroke_engine = Some(stroke_engine);
+            ));
 
             // Merged clone freezes the root composite, so make sure it's
             // fresh (no-op when clean). Hoisted above the `node_texture`
@@ -1207,19 +1099,12 @@ impl DarklyEngine {
                     .unwrap_or_else(|| paint_target.canvas_extent()),
             );
 
-            // Pointer strokes stabilize before they render. Canonical
-            // DoughDraw dabs bypass that policy entirely: their centre and
-            // radius are already the replay authority.
+            // Stabilized path: dabs render into the scratch, then the
+            // terminal's `commit` hook lands them on the layer.
             self.brush_pipelines.reset_uniform_rings();
-            let result = canonical_dab.is_none().then(|| engine.stabilize(info));
-            let max_div = result
-                .as_ref()
-                .map(|_| engine.max_divergence_window())
-                .unwrap_or(0);
-            let tip_vi = result
-                .as_ref()
-                .map(|_| engine.stabilizer_len().saturating_sub(1))
-                .unwrap_or(0);
+            let result = engine.stabilize(info);
+            let max_div = engine.max_divergence_window();
+            let tip_vi = engine.stabilizer_len().saturating_sub(1);
 
             // Synthesize divergence on the previously-rendered tip segment.
             // It was drawn with a degenerate `p3 = p2` because the next
@@ -1228,7 +1113,7 @@ impl DarklyEngine {
             // the deeper of the two when the stabilizer also reports
             // divergence (take the earliest vi that needs rebuild).
             let tip_div = tip_vi.saturating_sub(1);
-            let div_idx = match result.as_ref().and_then(|result| result.divergence_index) {
+            let div_idx = match result.divergence_index {
                 Some(k) => Some(k.min(tip_div)),
                 None if tip_vi >= 1 => Some(tip_div),
                 None => None,
@@ -1242,7 +1127,7 @@ impl DarklyEngine {
             // bound by construction, but `result.divergence_index` is what
             // the stabilizer reported.)
             #[cfg(debug_assertions)]
-            if let Some(k) = result.as_ref().and_then(|result| result.divergence_index) {
+            if let Some(k) = result.divergence_index {
                 let earliest = tip_vi.saturating_sub(max_div);
                 debug_assert!(
                     k >= earliest,
@@ -1303,21 +1188,7 @@ impl DarklyEngine {
                 self.brush_perf += gpu_ctx.submit_final();
             }
 
-            if let Some(dab) = canonical_dab {
-                self.brush_pipelines.reset_uniform_rings();
-                let mut gpu_ctx = make_gpu_ctx!("doughdraw-canonical-dab");
-                engine.render_canonical_round_dab(
-                    dab.center_px(),
-                    dab.radius_px(),
-                    dab.color(),
-                    &mut gpu_ctx,
-                );
-                self.brush_perf += gpu_ctx.submit_final();
-
-                let mut gpu_ctx = make_gpu_ctx!("doughdraw-canonical-commit");
-                engine.commit(&mut gpu_ctx);
-                self.brush_perf += gpu_ctx.submit_final();
-            } else if let Some(div_idx) = div_idx {
+            if let Some(div_idx) = div_idx {
                 // Divergence — try checkpoint-based partial re-render.
                 // The terminal's `begin_stroke` establishes outside-bbox
                 // state for whichever path we take below; the checkpoint
