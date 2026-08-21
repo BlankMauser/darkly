@@ -7,7 +7,6 @@
 [![crates.io](https://img.shields.io/crates/v/darkly-macros?style=for-the-badge&logo=rust&label=crates.io&labelColor=black&color=9500ff)](https://crates.io/crates/darkly-macros)
 [![docs.rs](https://img.shields.io/docsrs/darkly-macros?style=for-the-badge&logo=docsdotrs&labelColor=black&color=8100ff)](https://docs.rs/darkly-macros)
 [![GitHub](https://img.shields.io/github/stars/darkly-art/darkly?style=for-the-badge&logo=github&label=GitHub&labelColor=black&color=6c00ff)](https://github.com/darkly-art/darkly)
-[![License](https://img.shields.io/crates/l/darkly-macros?style=for-the-badge&label=License&labelColor=black&color=5800ff)](https://github.com/darkly-art/darkly/blob/master/LICENSE)
 [![Discord](https://img.shields.io/discord/1495886270780539021?style=for-the-badge&logo=discord&logoColor=white&label=Discord&labelColor=black&color=4400ff)](https://discord.gg/kFz2FGhbpu)
 
 </div>

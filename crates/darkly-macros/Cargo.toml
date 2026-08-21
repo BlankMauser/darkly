@@ -2,7 +2,6 @@
 name = "darkly-macros"
 version = "0.1.0"
 edition = "2021"
-license.workspace = true
 description = "Proc-macro support for the darkly GPU-native paint engine: the #[handlers] engine-bridge macro."
 repository = "https://github.com/darkly-art/darkly"
 homepage = "https://darkly.art"

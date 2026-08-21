@@ -52,8 +52,6 @@
                 <Icon name="fa6-solid:arrow-up-right-from-square" class="external" />
             </a>
         </div>
-
-        <p class="license">Licensed under AGPL-3.0-or-later</p>
     </div>
 </Modal>
 
@@ -139,10 +137,4 @@
 
     .link :global(svg) { color: var(--text-muted); }
     .link :global(.external) { font-size: 10px; }
-
-    .license {
-        margin: 4px 0 0;
-        font-size: 11px;
-        color: var(--text-muted);
-    }
 </style>
