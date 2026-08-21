@@ -15,9 +15,33 @@ use crate::coord::CanvasRect;
 use crate::gpu::layer_readback;
 use crate::gpu::paint_target::{GpuPaintTarget, PaintPipelines};
 use crate::gpu::region_store::UndoRegionEntry;
-use crate::integrations::doughdraw::DoughDrawCanonicalRoundDabV1;
+use crate::integrations::doughdraw::{
+    DoughDrawCanonicalRoundDabBatchV1, DoughDrawCanonicalRoundDabV1,
+};
 use crate::layer::LayerId;
 use crate::undo::GpuRegionAction;
+
+/// Conservative pixel bounds for one resolved DoughDraw Q8 circle.
+///
+/// A one-pixel guard covers every 4×4 sample on both circle edges while
+/// avoiding the fixed 32 px padding used by Darkly's native stroke policy.
+fn canonical_dab_growth_rect(dab: DoughDrawCanonicalRoundDabV1) -> CanvasRect {
+    const Q8: i64 = 256;
+    let radius_q8 = i64::from(dab.radius_q8);
+    let x0 = (i64::from(dab.center_x_q8) - radius_q8).div_euclid(Q8) - 1;
+    let y0 = (i64::from(dab.center_y_q8) - radius_q8).div_euclid(Q8) - 1;
+    let x1 = (i64::from(dab.center_x_q8) + radius_q8).div_euclid(Q8) + 2;
+    let y1 = (i64::from(dab.center_y_q8) + radius_q8).div_euclid(Q8) + 2;
+    CanvasRect::from_corners(x0 as i32, y0 as i32, x1 as i32, y1 as i32)
+}
+
+fn canonical_dab_batch_growth_rect(dabs: &[DoughDrawCanonicalRoundDabV1]) -> CanvasRect {
+    debug_assert!(!dabs.is_empty());
+    dabs.iter()
+        .map(|&dab| canonical_dab_growth_rect(dab))
+        .reduce(CanvasRect::union)
+        .expect("canonical dab batch is nonempty")
+}
 
 #[handlers]
 impl DarklyEngine {
@@ -698,6 +722,64 @@ impl DarklyEngine {
         }
     }
 
+    /// Grow a layer to contain full resolved DoughDraw dab footprints.
+    ///
+    /// This is deliberately separate from `ensure_layer_covers_dab`: normal
+    /// Darkly pointer strokes retain their historical centre-only growth
+    /// policy, while canonical replay dabs must preserve all pixels from the
+    /// external renderer's admitted brush range.
+    fn ensure_layer_covers_canonical_dabs(
+        &mut self,
+        layer_id: LayerId,
+        dabs: &[DoughDrawCanonicalRoundDabV1],
+    ) {
+        let current_extent = match self.paint_target(layer_id) {
+            Some(t) => t.canvas_frame().canvas_extent,
+            None => return,
+        };
+        let needed = canonical_dab_batch_growth_rect(dabs);
+        if current_extent.contains(needed) {
+            return;
+        }
+
+        let new_extent = match self.grow_node_to_fit(layer_id, needed) {
+            Some(e) => e,
+            None => return,
+        };
+        let dx = (current_extent.origin.x - new_extent.origin.x) as u32;
+        let dy = (current_extent.origin.y - new_extent.origin.y) as u32;
+        if let Some(stroke_buffer) = self.stroke_buffer.as_mut() {
+            self.gpu.encode("stroke-buffer-grow", |encoder| {
+                stroke_buffer.grow_preserving(
+                    &self.gpu.device,
+                    encoder,
+                    new_extent.width,
+                    new_extent.height,
+                    dx,
+                    dy,
+                    self.brush_pipelines.canvas_copy_bind_group_layout(),
+                );
+            });
+        }
+        if let Some(snap) = self.scratch_snapshot.as_mut() {
+            self.gpu.encode("region-scratch-grow", |encoder| {
+                self.region_scratch.grow_scratch_preserving(
+                    &self.gpu.device,
+                    encoder,
+                    current_extent,
+                    new_extent,
+                );
+            });
+            snap.saved = new_extent;
+        } else {
+            self.region_scratch.ensure_scratch_capacity(
+                &self.gpu.device,
+                new_extent.width,
+                new_extent.height,
+            );
+        }
+    }
+
     /// Grow whichever pixel-bearing node `node_id` names to cover `needed`,
     /// each growing **itself** — no host coupling.
     ///
@@ -897,7 +979,22 @@ impl DarklyEngine {
         &mut self,
         dab: DoughDrawCanonicalRoundDabV1,
     ) -> Result<(), &'static str> {
-        dab.validate().map_err(|_| "invalid canonical dab")?;
+        self.doughdraw_canonical_round_dabs(&DoughDrawCanonicalRoundDabBatchV1::single(dab))
+    }
+
+    /// Apply an ordered batch of DoughDraw-resolved round dabs in one GPU
+    /// submission. Their spacing was already decided by DoughDraw, so this
+    /// path never invokes Darkly stabilization or interpolation.
+    pub fn doughdraw_canonical_round_dabs(
+        &mut self,
+        batch: &DoughDrawCanonicalRoundDabBatchV1,
+    ) -> Result<(), &'static str> {
+        batch
+            .validate()
+            .map_err(|_| "invalid canonical dab batch")?;
+        let dabs = &batch.dabs;
+        let first = dabs[0];
+        let [x, y] = first.center_px();
         let layer_id = self.active_stroke_layer.ok_or("no active stroke")?;
         if !self.doc.is_node_editable(layer_id) || !self.is_node_paintable(layer_id) {
             return Err("active layer is not paintable");
@@ -911,13 +1008,12 @@ impl DarklyEngine {
             return Err("DoughDraw requires the precise paint terminal");
         }
         if let Some(engine) = self.brush_stroke_engine.as_mut() {
-            if !engine.begin_canonical_color(dab.color_rgba8) {
+            if !engine.begin_canonical_color(first.color_rgba8) {
                 return Err("canonical dabs require one fixed stroke colour");
             }
         }
 
-        let [x, y] = dab.center_px();
-        self.ensure_layer_covers_dab(layer_id, x, y);
+        self.ensure_layer_covers_canonical_dabs(layer_id, dabs);
 
         // `begin_stroke` defers this snapshot until the first dab. Keep that
         // undo boundary identical for the adapter's direct ingress.
@@ -949,10 +1045,10 @@ impl DarklyEngine {
             0.0,
             0.0,
             0.0,
-            dab.color(),
+            first.color(),
             self.compositor.canvas_width(),
             self.compositor.canvas_height(),
-            Some(dab),
+            Some(dabs),
         );
         self.compositor.mark_dirty();
         Ok(())
@@ -972,7 +1068,7 @@ impl DarklyEngine {
         color: [f32; 4],
         canvas_w: u32,
         canvas_h: u32,
-        canonical_dab: Option<DoughDrawCanonicalRoundDabV1>,
+        canonical_dabs: Option<&[DoughDrawCanonicalRoundDabV1]>,
     ) {
         // True on the lazy-init path below — the terminal's `begin_stroke`
         // hook must run once before the first dab to initialise the scratch.
@@ -1045,14 +1141,15 @@ impl DarklyEngine {
                 runner,
                 color,
                 self.active_spacing_config(),
-                canonical_dab
+                canonical_dabs
+                    .and_then(|dabs| dabs.first())
                     .map(|dab| dab.radius_px() * 2.0 / crate::brush::DAB_REFERENCE_SIZE as f32)
                     .unwrap_or_else(|| self.active_base_size()),
                 stabilizer,
                 clone_source_anchor,
                 StrokeEngine::random_seed(),
             );
-            if let Some(dab) = canonical_dab {
+            if let Some(dab) = canonical_dabs.and_then(|dabs| dabs.first()) {
                 let accepted = stroke_engine.begin_canonical_color(dab.color_rgba8);
                 debug_assert!(accepted);
             }
@@ -1196,6 +1293,77 @@ impl DarklyEngine {
             &self.brush_pipelines.default_selection_bind_group
         };
 
+        // Re-borrow per invocation: each context owns its scratch borrow
+        // until `submit_final()` completes, then releases it for the next.
+        macro_rules! make_gpu_ctx {
+            ($label:expr, $stroke_buffer:expr) => {{
+                let (scratch, pre_stroke_texture, pre_stroke_bind_group, source_override) =
+                    $stroke_buffer.parts_for_brush_ctx();
+                BrushGpuContext {
+                    encoder: self.gpu.device.create_command_encoder(
+                        &wgpu::CommandEncoderDescriptor {
+                            label: Some($label),
+                        },
+                    ),
+                    device: &self.gpu.device,
+                    queue: &self.gpu.queue,
+                    pipelines: &self.brush_pipelines,
+                    selection_bind_group: sel_bg,
+                    canvas_width: canvas_w,
+                    canvas_height: canvas_h,
+                    canvas_origin: [self.doc.canvas_origin.x, self.doc.canvas_origin.y],
+                    // blend_mode applies at commit (paint vs. erase).
+                    // Each terminal owns its scratch accumulation policy;
+                    // only the commit composite reads this value.
+                    blend_mode: self.brush_blend_mode,
+                    view_rotation: self.view_params.rotation,
+                    perf: BrushPerfCounters::default(),
+                    stroke: Some(StrokeResources {
+                        scratch,
+                        paint_target,
+                        pre_stroke_texture,
+                        pre_stroke_bind_group,
+                        source_override,
+                    }),
+                    preview: None,
+                    dab_batch: DabBatch::default(),
+                }
+            }};
+        }
+
+        let canonical_rendered =
+            if let (Some(dabs), Some(stroke_buffer)) = (canonical_dabs, stroke_buffer.as_mut()) {
+                engine.set_clone_source_frame(
+                    stroke_buffer
+                        .source_snapshot_frame()
+                        .unwrap_or_else(|| paint_target.canvas_extent()),
+                );
+                self.brush_pipelines.reset_uniform_rings();
+                let mut gpu_ctx = make_gpu_ctx!("doughdraw-canonical-dabs", stroke_buffer);
+                if need_begin_stroke {
+                    engine.begin_stroke(&mut gpu_ctx);
+                }
+                for dab in dabs {
+                    engine.render_canonical_round_dab(
+                        dab.center_px(),
+                        dab.radius_px(),
+                        dab.color(),
+                        &mut gpu_ctx,
+                    );
+                }
+                engine.flush_canonical_round_dabs(&mut gpu_ctx);
+                engine.commit(&mut gpu_ctx);
+                self.brush_perf += gpu_ctx.submit_final();
+                true
+            } else {
+                false
+            };
+        if canonical_rendered {
+            self.brush_stroke_engine = Some(engine);
+            self.stroke_buffer = stroke_buffer;
+            return;
+        }
+
         if let Some(ref mut stroke_buffer) = stroke_buffer {
             // Refresh the clone source frame every pen event: the frozen
             // snapshot's rect when one exists (cross-layer / merged),
@@ -1212,7 +1380,7 @@ impl DarklyEngine {
             // DoughDraw dabs bypass that policy entirely: their centre and
             // radius are already the replay authority.
             self.brush_pipelines.reset_uniform_rings();
-            let result = canonical_dab.is_none().then(|| engine.stabilize(info));
+            let result = canonical_dabs.is_none().then(|| engine.stabilize(info));
             let max_div = result
                 .as_ref()
                 .map(|_| engine.max_divergence_window())
@@ -1252,75 +1420,20 @@ impl DarklyEngine {
                 );
             }
 
-            // Helper macro: create a BrushGpuContext wired with the stroke
-            // scratch, paint target (layer or mask), and pre-stroke snapshot.
-            // The paint target carries the destination format internally;
-            // `color_output::commit` calls `paint_target.commit_brush_dab(...)`
-            // and never branches on R8 vs RGBA8.
-            macro_rules! make_gpu_ctx {
-                ($label:expr) => {{
-                    // Re-borrow per invocation: each ctx holds &mut Scratch
-                    // for its own lifetime, then is consumed by `submit_final()`
-                    // before the next macro expansion reborrows.
-                    let (scratch, pre_stroke_texture, pre_stroke_bind_group, source_override) =
-                        stroke_buffer.parts_for_brush_ctx();
-                    BrushGpuContext {
-                        encoder: self.gpu.device.create_command_encoder(
-                            &wgpu::CommandEncoderDescriptor {
-                                label: Some($label),
-                            },
-                        ),
-                        device: &self.gpu.device,
-                        queue: &self.gpu.queue,
-                        pipelines: &self.brush_pipelines,
-                        selection_bind_group: sel_bg,
-                        canvas_width: canvas_w,
-                        canvas_height: canvas_h,
-                        canvas_origin: [self.doc.canvas_origin.x, self.doc.canvas_origin.y],
-                        // blend_mode applies at commit (paint vs. erase).
-                        // Per-dab passes hard-code source-over — the
-                        // scratch is a coverage accumulator, and only the
-                        // commit composite reads this value.
-                        blend_mode: self.brush_blend_mode,
-                        view_rotation: self.view_params.rotation,
-                        perf: BrushPerfCounters::default(),
-                        stroke: Some(StrokeResources {
-                            scratch,
-                            paint_target,
-                            pre_stroke_texture,
-                            pre_stroke_bind_group,
-                            source_override,
-                        }),
-                        preview: None,
-                        dab_batch: DabBatch::default(),
-                    }
-                }};
-            }
-
             // First event of the stroke — let the terminal set up its scratch.
             if need_begin_stroke {
-                let mut gpu_ctx = make_gpu_ctx!("brush-begin-stroke");
+                let mut gpu_ctx = make_gpu_ctx!("brush-begin-stroke", stroke_buffer);
                 engine.begin_stroke(&mut gpu_ctx);
                 self.brush_perf += gpu_ctx.submit_final();
             }
 
-            if let Some(dab) = canonical_dab {
-                self.brush_pipelines.reset_uniform_rings();
-                let mut gpu_ctx = make_gpu_ctx!("doughdraw-canonical-dab");
-                engine.render_canonical_round_dab(
-                    dab.center_px(),
-                    dab.radius_px(),
-                    dab.color(),
-                    &mut gpu_ctx,
-                );
-                self.brush_perf += gpu_ctx.submit_final();
-            } else if let Some(div_idx) = div_idx {
+            if let Some(div_idx) = div_idx {
                 // Divergence — try checkpoint-based partial re-render.
                 // The terminal's `begin_stroke` establishes outside-bbox
                 // state for whichever path we take below; the checkpoint
                 // ring no longer clears on its own.
                 {
-                    let mut gpu_ctx = make_gpu_ctx!("brush-begin-stroke-rewind");
+                    let mut gpu_ctx = make_gpu_ctx!("brush-begin-stroke-rewind", stroke_buffer);
                     engine.begin_stroke(&mut gpu_ctx);
                     self.brush_perf += gpu_ctx.submit_final();
                 }
@@ -1388,7 +1501,7 @@ impl DarklyEngine {
                     }
 
                     // Render segment.
-                    let mut gpu_ctx = make_gpu_ctx!("brush-rerender-seg");
+                    let mut gpu_ctx = make_gpu_ctx!("brush-rerender-seg", stroke_buffer);
                     engine.render_from_stabilized_range_to(&mut gpu_ctx, seg_start, boundary);
                     self.brush_perf += gpu_ctx.submit_final();
 
@@ -1424,13 +1537,13 @@ impl DarklyEngine {
 
                 // Render any remaining dabs past the last boundary.
                 if seg_start <= tip_vi {
-                    let mut gpu_ctx = make_gpu_ctx!("brush-rerender-tail");
+                    let mut gpu_ctx = make_gpu_ctx!("brush-rerender-tail", stroke_buffer);
                     engine.render_from_stabilized_range_to(&mut gpu_ctx, seg_start, tip_vi);
                     self.brush_perf += gpu_ctx.submit_final();
                 }
             } else {
                 // No divergence — render tail only.
-                let mut gpu_ctx = make_gpu_ctx!("brush-dab");
+                let mut gpu_ctx = make_gpu_ctx!("brush-dab", stroke_buffer);
                 engine.render_from_stabilized_tail(&mut gpu_ctx);
                 self.brush_perf += gpu_ctx.submit_final();
 
@@ -1473,7 +1586,7 @@ impl DarklyEngine {
             // For paint this is `source_over(scratch × opacity, pre_stroke)`;
             // other terminals (warp, smudge, …) will do their own thing.
             {
-                let mut gpu_ctx = make_gpu_ctx!("brush-commit");
+                let mut gpu_ctx = make_gpu_ctx!("brush-commit", stroke_buffer);
                 engine.commit(&mut gpu_ctx);
                 self.brush_perf += gpu_ctx.submit_final();
             }
@@ -1829,5 +1942,27 @@ impl DarklyEngine {
             },
         );
         Some(texture)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::integrations::doughdraw::DOUGHDRAW_MAX_CANONICAL_ROUND_RADIUS_Q8_V1;
+
+    #[test]
+    fn canonical_dab_growth_covers_the_largest_admitted_round_brush() {
+        let bounds = canonical_dab_growth_rect(DoughDrawCanonicalRoundDabV1 {
+            center_x_q8: 0,
+            center_y_q8: 0,
+            radius_q8: DOUGHDRAW_MAX_CANONICAL_ROUND_RADIUS_Q8_V1,
+            opacity_u16: u16::MAX,
+            color_rgba8: [0; 4],
+        });
+
+        assert_eq!(
+            (bounds.x0(), bounds.y0(), bounds.x1(), bounds.y1()),
+            (-513, -513, 513, 513)
+        );
     }
 }

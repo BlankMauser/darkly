@@ -6,10 +6,18 @@
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::brush::gpu_context::MAX_DABS_PER_PHASE;
 use crate::brush::{self, input_value::InputValue, wire::BrushWireType};
 use crate::nodegraph::Graph;
 
 pub const DOUGHDRAW_BRUSH_PROGRAM_FORMAT_V1: &str = "doughdraw.brush-execution-program.v1";
+/// Half of DoughDraw's largest admitted presentation brush size.
+///
+/// The direct-dab adapter only supports the canonical round path, whose
+/// radius cannot exceed this value even at full pressure. Keeping the limit
+/// explicit means the protocol accepts every supported DoughDraw round dab
+/// without admitting values the Q8 GPU coverage path cannot represent.
+pub const DOUGHDRAW_MAX_CANONICAL_ROUND_RADIUS_Q8_V1: u32 = 0x1_fffe;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -41,9 +49,42 @@ pub struct DoughDrawBrushProgramV1 {
 pub struct DoughDrawCanonicalRoundDabV1 {
     pub center_x_q8: i32,
     pub center_y_q8: i32,
-    pub radius_q8: u16,
+    pub radius_q8: u32,
     pub opacity_u16: u16,
     pub color_rgba8: [u8; 4],
+}
+
+/// An ordered, bounded batch of already-resolved DoughDraw round dabs.
+///
+/// The whole batch must share one straight RGBA colour: the adapter's
+/// maximum-coverage union can only reproduce DoughDraw's CPU oracle for a
+/// fixed-colour stroke.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+pub struct DoughDrawCanonicalRoundDabBatchV1 {
+    pub dabs: Vec<DoughDrawCanonicalRoundDabV1>,
+}
+
+impl DoughDrawCanonicalRoundDabBatchV1 {
+    pub fn single(dab: DoughDrawCanonicalRoundDabV1) -> Self {
+        Self { dabs: vec![dab] }
+    }
+
+    /// Validate the complete batch before it reaches the paint engine.
+    pub fn validate(&self) -> Result<(), DoughDrawBrushProgramError> {
+        if self.dabs.is_empty() || self.dabs.len() > MAX_DABS_PER_PHASE as usize {
+            return Err(DoughDrawBrushProgramError::Invalid("canonical dab batch"));
+        }
+        let color = self.dabs[0].color_rgba8;
+        for dab in &self.dabs {
+            dab.validate()?;
+            if dab.color_rgba8 != color {
+                return Err(DoughDrawBrushProgramError::Invalid("canonical dab colour"));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl DoughDrawCanonicalRoundDabV1 {
@@ -69,7 +110,7 @@ impl DoughDrawCanonicalRoundDabV1 {
     }
 
     pub fn validate(self) -> Result<(), DoughDrawBrushProgramError> {
-        if self.radius_q8 == 0 {
+        if self.radius_q8 == 0 || self.radius_q8 > DOUGHDRAW_MAX_CANONICAL_ROUND_RADIUS_Q8_V1 {
             return Err(DoughDrawBrushProgramError::Invalid("canonical dab radius"));
         }
         Ok(())
@@ -257,5 +298,81 @@ mod tests {
             .validate(),
             Err(DoughDrawBrushProgramError::Invalid("canonical dab radius"))
         ));
+    }
+
+    #[test]
+    fn canonical_round_dab_accepts_doughdraws_largest_radius() {
+        let dab = DoughDrawCanonicalRoundDabV1 {
+            center_x_q8: 0,
+            center_y_q8: 0,
+            radius_q8: DOUGHDRAW_MAX_CANONICAL_ROUND_RADIUS_Q8_V1,
+            opacity_u16: u16::MAX,
+            color_rgba8: [0; 4],
+        };
+
+        assert_eq!(dab.radius_px(), 511.992_2);
+        assert!(dab.validate().is_ok());
+        assert!(matches!(
+            DoughDrawCanonicalRoundDabV1 {
+                radius_q8: DOUGHDRAW_MAX_CANONICAL_ROUND_RADIUS_Q8_V1 + 1,
+                ..dab
+            }
+            .validate(),
+            Err(DoughDrawBrushProgramError::Invalid("canonical dab radius"))
+        ));
+    }
+
+    #[test]
+    fn canonical_round_dab_batch_rejects_invalid_members_before_painting() {
+        let dab = DoughDrawCanonicalRoundDabV1 {
+            center_x_q8: 0,
+            center_y_q8: 0,
+            radius_q8: 256,
+            opacity_u16: u16::MAX,
+            color_rgba8: [23, 44, 63, 255],
+        };
+        assert!(DoughDrawCanonicalRoundDabBatchV1 {
+            dabs: vec![
+                dab,
+                DoughDrawCanonicalRoundDabV1 {
+                    radius_q8: 0,
+                    ..dab
+                }
+            ],
+        }
+        .validate()
+        .is_err());
+        assert!(DoughDrawCanonicalRoundDabBatchV1 {
+            dabs: vec![
+                dab,
+                DoughDrawCanonicalRoundDabV1 {
+                    color_rgba8: [24, 44, 63, 255],
+                    ..dab
+                }
+            ],
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn canonical_round_dab_batch_accepts_the_phase_capacity() {
+        let dab = DoughDrawCanonicalRoundDabV1 {
+            center_x_q8: 0,
+            center_y_q8: 0,
+            radius_q8: 256,
+            opacity_u16: u16::MAX,
+            color_rgba8: [23, 44, 63, 255],
+        };
+        assert!(DoughDrawCanonicalRoundDabBatchV1 {
+            dabs: vec![dab; MAX_DABS_PER_PHASE as usize],
+        }
+        .validate()
+        .is_ok());
+        assert!(DoughDrawCanonicalRoundDabBatchV1 {
+            dabs: vec![dab; MAX_DABS_PER_PHASE as usize + 1],
+        }
+        .validate()
+        .is_err());
     }
 }

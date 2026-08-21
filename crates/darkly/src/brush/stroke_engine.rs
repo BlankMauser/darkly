@@ -618,6 +618,11 @@ impl StrokeEngine {
             gpu,
             self.dab_count as usize,
         );
+    }
+
+    /// Flush a canonical batch after all of its resolved dabs have been
+    /// placed into the shared GPU context.
+    pub fn flush_canonical_round_dabs(&mut self, gpu: &mut BrushGpuContext) {
         self.runner.flush_dabs(gpu);
     }
 

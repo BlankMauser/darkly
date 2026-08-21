@@ -273,7 +273,12 @@ impl BrushNodeEvaluator for ShapeEvaluator {
                  \x20   let {circle_ident}_layer_q8 = vec2<i32>(u.intrinsic.layer_offset) * 256;\n\
                  \x20   let {circle_ident}_center_q8 = vec2<i32>(round(d.pos * 256.0));\n\
                  \x20   let {circle_ident}_radius_q8 = u32(round((1.0 / d.inv_radius_target_px) * 256.0));\n\
-                 \x20   let {circle_ident}_radius_squared = {circle_ident}_radius_q8 * {circle_ident}_radius_q8;\n\
+                 \x20   let {circle_ident}_radius_lo = {circle_ident}_radius_q8 & 65535u;\n\
+                 \x20   let {circle_ident}_radius_hi = {circle_ident}_radius_q8 >> 16u;\n\
+                 \x20   let {circle_ident}_radius_p0 = {circle_ident}_radius_lo * {circle_ident}_radius_lo;\n\
+                 \x20   let {circle_ident}_radius_cross = {circle_ident}_radius_lo * {circle_ident}_radius_hi * 2u;\n\
+                 \x20   let {circle_ident}_radius_sq_lo = {circle_ident}_radius_p0 + ({circle_ident}_radius_cross << 16u);\n\
+                 \x20   let {circle_ident}_radius_sq_hi = {circle_ident}_radius_hi * {circle_ident}_radius_hi + ({circle_ident}_radius_cross >> 16u) + select(0u, 1u, {circle_ident}_radius_sq_lo < {circle_ident}_radius_p0);\n\
                  \x20   var {circle_ident}_inside: u32 = 0u;\n\
                  \x20   for (var sample_y: u32 = 0u; sample_y < 4u; sample_y = sample_y + 1u) {{\n\
                  \x20       for (var sample_x: u32 = 0u; sample_x < 4u; sample_x = sample_x + 1u) {{\n\
@@ -281,9 +286,21 @@ impl BrushNodeEvaluator for ShapeEvaluator {
                  \x20           let delta_q8 = sample_q8 - {circle_ident}_center_q8;\n\
                  \x20           let delta_x = u32(abs(delta_q8.x));\n\
                  \x20           let delta_y = u32(abs(delta_q8.y));\n\
-                 \x20           let delta_x_squared = delta_x * delta_x;\n\
-                 \x20           let delta_y_squared = delta_y * delta_y;\n\
-                 \x20           let inside = delta_x <= {circle_ident}_radius_q8 && delta_y <= {circle_ident}_radius_q8 && delta_x_squared <= {circle_ident}_radius_squared && delta_y_squared <= {circle_ident}_radius_squared - delta_x_squared;\n\
+                 \x20           let delta_x_lo = delta_x & 65535u;\n\
+                 \x20           let delta_x_hi = delta_x >> 16u;\n\
+                 \x20           let delta_x_p0 = delta_x_lo * delta_x_lo;\n\
+                 \x20           let delta_x_cross = delta_x_lo * delta_x_hi * 2u;\n\
+                 \x20           let delta_x_sq_lo = delta_x_p0 + (delta_x_cross << 16u);\n\
+                 \x20           let delta_x_sq_hi = delta_x_hi * delta_x_hi + (delta_x_cross >> 16u) + select(0u, 1u, delta_x_sq_lo < delta_x_p0);\n\
+                 \x20           let delta_y_lo = delta_y & 65535u;\n\
+                 \x20           let delta_y_hi = delta_y >> 16u;\n\
+                 \x20           let delta_y_p0 = delta_y_lo * delta_y_lo;\n\
+                 \x20           let delta_y_cross = delta_y_lo * delta_y_hi * 2u;\n\
+                 \x20           let delta_y_sq_lo = delta_y_p0 + (delta_y_cross << 16u);\n\
+                 \x20           let delta_y_sq_hi = delta_y_hi * delta_y_hi + (delta_y_cross >> 16u) + select(0u, 1u, delta_y_sq_lo < delta_y_p0);\n\
+                 \x20           let distance_sq_lo = delta_x_sq_lo + delta_y_sq_lo;\n\
+                 \x20           let distance_sq_hi = delta_x_sq_hi + delta_y_sq_hi + select(0u, 1u, distance_sq_lo < delta_x_sq_lo);\n\
+                 \x20           let inside = delta_x <= {circle_ident}_radius_q8 && delta_y <= {circle_ident}_radius_q8 && (distance_sq_hi < {circle_ident}_radius_sq_hi || (distance_sq_hi == {circle_ident}_radius_sq_hi && distance_sq_lo <= {circle_ident}_radius_sq_lo));\n\
                  \x20           {circle_ident}_inside = {circle_ident}_inside + select(0u, 1u, inside);\n\
                  \x20       }}\n\
                  \x20   }}\n\

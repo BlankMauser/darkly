@@ -3,7 +3,7 @@ use serde_json::json;
 use crate::engine::protocol::{bad_payload, decode, RequestRegistration, Response};
 use crate::integrations::doughdraw::{
     compile_brush_program_v1, DoughDrawBrushProgramError, DoughDrawBrushProgramV1,
-    DoughDrawCanonicalRoundDabV1,
+    DoughDrawCanonicalRoundDabBatchV1, DoughDrawCanonicalRoundDabV1,
 };
 
 pub fn registrations() -> Vec<RequestRegistration> {
@@ -39,8 +39,9 @@ pub fn registrations() -> Vec<RequestRegistration> {
     ),
         RequestRegistration::new("doughdraw_canonical_round_dab", |engine, payload, _bytes| {
             let dab: DoughDrawCanonicalRoundDabV1 = decode(payload)?;
-            dab.validate().map_err(bad_payload)?;
-            match engine.doughdraw_canonical_round_dab(dab) {
+            let batch = DoughDrawCanonicalRoundDabBatchV1::single(dab);
+            batch.validate().map_err(bad_payload)?;
+            match engine.doughdraw_canonical_round_dabs(&batch) {
                 Ok(()) => Ok(Response::json(json!({
                     "kind": "applied",
                     "backendId": "darkly",
@@ -54,6 +55,26 @@ pub fn registrations() -> Vec<RequestRegistration> {
         })
         .send()
         .req::<DoughDrawCanonicalRoundDabV1>()
+        .resp_literal(
+            "{ kind: 'applied'; backendId: 'darkly' } | { kind: 'rejected'; backendId: 'darkly'; reason: string }",
+        ),
+        RequestRegistration::new("doughdraw_canonical_round_dabs", |engine, payload, _bytes| {
+            let batch: DoughDrawCanonicalRoundDabBatchV1 = decode(payload)?;
+            batch.validate().map_err(bad_payload)?;
+            match engine.doughdraw_canonical_round_dabs(&batch) {
+                Ok(()) => Ok(Response::json(json!({
+                    "kind": "applied",
+                    "backendId": "darkly",
+                }))),
+                Err(reason) => Ok(Response::json(json!({
+                    "kind": "rejected",
+                    "backendId": "darkly",
+                    "reason": reason,
+                }))),
+            }
+        })
+        .send()
+        .req::<DoughDrawCanonicalRoundDabBatchV1>()
         .resp_literal(
             "{ kind: 'applied'; backendId: 'darkly' } | { kind: 'rejected'; backendId: 'darkly'; reason: string }",
         ),
