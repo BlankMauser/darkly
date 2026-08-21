@@ -29,6 +29,53 @@ pub struct DoughDrawBrushProgramV1 {
     pub bitmap_tip_hash_hex: Option<String>,
 }
 
+/// One resolved DoughDraw round-brush dab.
+///
+/// Coordinates and radius use DoughDraw's Q8 fixed-point units so replay
+/// sends the same values to every renderer. This is deliberately narrower
+/// than a generic graph input: `compile_brush_program_v1` remains the gate
+/// for the only brush shape this adapter can reproduce exactly today.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+pub struct DoughDrawCanonicalRoundDabV1 {
+    pub center_x_q8: i32,
+    pub center_y_q8: i32,
+    pub radius_q8: u16,
+    pub opacity_u16: u16,
+    pub color_rgba8: [u8; 4],
+}
+
+impl DoughDrawCanonicalRoundDabV1 {
+    pub fn radius_px(self) -> f32 {
+        self.radius_q8 as f32 / 256.0
+    }
+
+    pub fn center_px(self) -> [f32; 2] {
+        [
+            self.center_x_q8 as f32 / 256.0,
+            self.center_y_q8 as f32 / 256.0,
+        ]
+    }
+
+    pub fn color(self) -> [f32; 4] {
+        let opacity = self.opacity_u16 as f32 / u16::MAX as f32;
+        [
+            self.color_rgba8[0] as f32 / u8::MAX as f32,
+            self.color_rgba8[1] as f32 / u8::MAX as f32,
+            self.color_rgba8[2] as f32 / u8::MAX as f32,
+            (self.color_rgba8[3] as f32 / u8::MAX as f32) * opacity,
+        ]
+    }
+
+    pub fn validate(self) -> Result<(), DoughDrawBrushProgramError> {
+        if self.radius_q8 == 0 {
+            return Err(DoughDrawBrushProgramError::Invalid("canonical dab radius"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DoughDrawBrushProgramError {
     #[error("invalid DoughDraw brush program: {0}")]
@@ -66,7 +113,11 @@ pub fn compile_brush_program_v1(
             "Darkly default graph has no circle",
         ))?;
     graph
-        .set_port_value(&circle, "coverage", InputValue::Int(1))
+        .set_port_value(
+            &circle,
+            "coverage",
+            InputValue::Int(brush::nodes::circle::DOUGHDRAW_Q8_COVERAGE),
+        )
         .map_err(|_| DoughDrawBrushProgramError::Invalid("Darkly coverage input rejected"))?;
     brush::compile_graph(&graph)
         .map_err(|_| DoughDrawBrushProgramError::Invalid("Darkly graph did not compile"))?;
@@ -150,13 +201,28 @@ mod tests {
             .values()
             .find(|node| node.type_id == "circle")
             .unwrap();
-        assert!(circle
-            .ports
-            .iter()
-            .any(|port| { port.name == "coverage" && port.value == InputValue::Int(1) }));
+        assert!(circle.ports.iter().any(|port| {
+            port.name == "coverage"
+                && port.value == InputValue::Int(brush::nodes::circle::DOUGHDRAW_Q8_COVERAGE)
+        }));
         let runner = brush::compile_graph(&graph).unwrap();
         assert_eq!(runner.scratch_format(), wgpu::TextureFormat::Rgba16Float);
         assert!(runner.compiled_brush().unwrap().brush_extent_extra_px > 0.5);
+        let compiled = runner.compiled_brush().unwrap();
+        for source in [&compiled.stroke_wgsl, &compiled.cursor_preview_wgsl] {
+            let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|error| {
+                panic!(
+                    "DoughDraw Q8 shader parse failed: {}",
+                    error.emit_to_string(source)
+                )
+            });
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .expect("DoughDraw Q8 shader validation failed");
+        }
     }
 
     #[test]
@@ -166,6 +232,30 @@ mod tests {
         assert!(matches!(
             compile_brush_program_v1(&program),
             Err(DoughDrawBrushProgramError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn canonical_round_dab_preserves_fixed_point_inputs() {
+        let dab = DoughDrawCanonicalRoundDabV1 {
+            center_x_q8: -384,
+            center_y_q8: 640,
+            radius_q8: 1_024,
+            opacity_u16: 32_768,
+            color_rgba8: [23, 44, 63, 255],
+        };
+
+        assert_eq!(dab.center_px(), [-1.5, 2.5]);
+        assert_eq!(dab.radius_px(), 4.0);
+        assert_eq!(dab.color()[3], 32_768.0 / 65_535.0);
+        assert!(dab.validate().is_ok());
+        assert!(matches!(
+            DoughDrawCanonicalRoundDabV1 {
+                radius_q8: 0,
+                ..dab
+            }
+            .validate(),
+            Err(DoughDrawBrushProgramError::Invalid("canonical dab radius"))
         ));
     }
 }
