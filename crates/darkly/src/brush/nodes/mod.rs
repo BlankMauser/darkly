@@ -16,6 +16,7 @@ pub mod multiply;
 pub mod noise;
 pub mod paint;
 pub mod paint_color;
+pub mod paint_precise;
 pub mod pen_input;
 pub mod polygon;
 pub mod random;
@@ -45,6 +46,7 @@ pub fn registrations() -> Vec<BrushNodeRegistration> {
         noise::register(),
         paint::register(),
         paint_color::register(),
+        paint_precise::register(),
         pen_input::register(),
         polygon::register(),
         random::register(),

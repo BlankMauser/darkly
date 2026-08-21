@@ -45,7 +45,7 @@ pub fn compile_brush_program_v1(
     // DoughDraw's canonical round brush spaces dabs at diameter / 8. Darkly
     // expresses spacing as a diameter ratio, so 0.125 is the exact unit scale.
     let spacing = 0.125_f32 * (program.spacing_scale_q16 as f32 / 65_536.0);
-    let mut graph = brush::default_graph();
+    let mut graph = brush::default_graph_with_paint_terminal(brush::nodes::paint_precise::TYPE_ID);
     let settings = graph
         .nodes()
         .values()
@@ -138,6 +138,12 @@ mod tests {
 
     #[test]
     fn compiles_the_supported_round_program() {
+        assert_eq!(
+            brush::compile_graph(&brush::default_graph())
+                .unwrap()
+                .scratch_format(),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         let graph = compile_brush_program_v1(&unit_round()).unwrap();
         let circle = graph
             .nodes()
@@ -149,6 +155,7 @@ mod tests {
             .iter()
             .any(|port| { port.name == "coverage" && port.value == InputValue::Int(1) }));
         let runner = brush::compile_graph(&graph).unwrap();
+        assert_eq!(runner.scratch_format(), wgpu::TextureFormat::Rgba16Float);
         assert!(runner.compiled_brush().unwrap().brush_extent_extra_px > 0.5);
     }
 

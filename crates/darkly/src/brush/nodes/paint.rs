@@ -84,7 +84,11 @@ struct PerBrushPipeline {
 }
 
 impl PerBrushPipeline {
-    fn build(ctx: &BuildContext, compiled: &CompiledBrush) -> Self {
+    fn build(
+        ctx: &BuildContext,
+        compiled: &CompiledBrush,
+        scratch_format: wgpu::TextureFormat,
+    ) -> Self {
         let shader = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -189,7 +193,7 @@ impl PerBrushPipeline {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: scratch_format,
                         blend: Some(paint_blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -307,11 +311,16 @@ impl PaintPipeline {
     /// on every `flush_dabs` — the first call for a hash builds; later
     /// calls reuse. With ~tens of brushes max, the HashMap lookup is
     /// noise compared to the render pass cost.
-    fn ensure_pipeline(&self, ctx: &BuildContext, compiled: &CompiledBrush) {
+    fn ensure_pipeline(
+        &self,
+        ctx: &BuildContext,
+        compiled: &CompiledBrush,
+        scratch_format: wgpu::TextureFormat,
+    ) {
         let mut cache = self.cache.borrow_mut();
         cache
             .entry(compiled.topology_hash)
-            .or_insert_with(|| PerBrushPipeline::build(ctx, compiled));
+            .or_insert_with(|| PerBrushPipeline::build(ctx, compiled, scratch_format));
     }
 
     /// Run a closure with the per-brush pipeline. Panics if the
@@ -357,15 +366,23 @@ fn paint_pipeline_reg() -> BrushPipelineRegistration {
 pub const TYPE_ID: &str = "paint";
 
 pub fn register() -> BrushNodeRegistration {
+    register_with_format(TYPE_ID, "Paint", crate::brush::node::COLOR_SCRATCH_FORMAT)
+}
+
+pub(crate) fn register_with_format(
+    type_id: &'static str,
+    display_name: &'static str,
+    scratch_format: wgpu::TextureFormat,
+) -> BrushNodeRegistration {
     BrushNodeRegistration {
         pipelines: vec![paint_pipeline_reg()],
         evaluator: || Box::new(PaintEvaluator),
         lifecycle: crate::brush::node::Lifecycle::ClearScratchToTransparent,
-        scratch_format: crate::brush::node::COLOR_SCRATCH_FORMAT,
+        scratch_format,
         node: NodeRegistration {
-            type_id: TYPE_ID,
+            type_id,
             category: "output",
-            display_name: "Paint",
+            display_name,
             description: "Output that deposits a brush mark onto the canvas. Plug a Stamp Tip (or any colored mark) into the dab input — this is where paint actually lands.",
             ports: vec![
                 PortDef::input("position", BrushWireType::Vec2)
@@ -740,5 +757,10 @@ fn ensure_per_brush_pipeline(
         texture_registry: gpu.pipelines.texture_registry(),
         baked_sources: gpu.pipelines.baked_sources(),
     };
-    pipe.ensure_pipeline(&ctx, compiled);
+    let scratch_format = gpu
+        .stroke
+        .as_ref()
+        .map(|stroke| stroke.scratch.format())
+        .unwrap_or(crate::brush::node::COLOR_SCRATCH_FORMAT);
+    pipe.ensure_pipeline(&ctx, compiled, scratch_format);
 }

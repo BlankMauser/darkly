@@ -267,7 +267,7 @@ impl BrushNodeEvaluator for ShapeEvaluator {
                  \x20           {circle_ident}_inside = {circle_ident}_inside + select(0u, 1u, dot(sample_local, sample_local) <= 1.0);\n\
                  \x20       }}\n\
                  \x20   }}\n\
-                 \x20   let {circle_ident}: f32 = f32({circle_ident}_inside) / 16.0;\n",
+                 \x20   let {circle_ident}: f32 = f32(({circle_ident}_inside * 255u + 8u) / 16u) / 255.0;\n",
             )
         } else {
             format!(

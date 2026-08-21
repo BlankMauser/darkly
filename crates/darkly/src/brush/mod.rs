@@ -252,6 +252,12 @@ pub fn graph_capabilities(
 /// → stamp → paint` — minus the per-brush configuration
 /// closure (no exposed softness, no flow wire).
 pub fn default_graph() -> crate::nodegraph::Graph<BrushWireType> {
+    default_graph_with_paint_terminal(nodes::paint::TYPE_ID)
+}
+
+pub(crate) fn default_graph_with_paint_terminal(
+    terminal_type_id: &str,
+) -> crate::nodegraph::Graph<BrushWireType> {
     use crate::nodegraph::{Graph, PortRef};
 
     let registry = registry();
@@ -276,7 +282,10 @@ pub fn default_graph() -> crate::nodegraph::Graph<BrushWireType> {
     // a plain disc; no input override needed.
     let circle = graph.add_node("circle", registry.get("circle").unwrap().ports.clone());
     let stamp = graph.add_node("stamp", registry.get("stamp").unwrap().ports.clone());
-    let terminal = graph.add_node("paint", registry.get("paint").unwrap().ports.clone());
+    let terminal = graph.add_node(
+        terminal_type_id,
+        registry.get(terminal_type_id).unwrap().ports.clone(),
+    );
 
     let wires = [
         (pen.clone(), "pressure", terminal.clone(), "flow"),
