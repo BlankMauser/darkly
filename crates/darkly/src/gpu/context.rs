@@ -108,10 +108,10 @@ impl GpuContext {
     }
 
     /// Create a context whose surface is explicitly configured for alpha-
-    /// preserving presentation. This prefers premultiplied alpha and falls
-    /// back to postmultiplied alpha; unlike [`Self::new`], it rejects a
-    /// surface that cannot preserve alpha instead of silently falling back to
-    /// an opaque compositor mode.
+    /// preserving presentation. Browser WebGPU uses premultiplied alpha;
+    /// native surfaces prefer it and can fall back to postmultiplied alpha.
+    /// Unlike [`Self::new`], this rejects native surfaces that cannot preserve
+    /// alpha instead of silently falling back to an opaque compositor mode.
     pub async fn new_transparent_present(
         instance: wgpu::Instance,
         surface: wgpu::Surface<'static>,
@@ -383,20 +383,39 @@ fn select_presentation_alpha(
         return Ok((alpha_modes[0], PresentationAlphaPolicy::Opaque));
     }
 
-    if alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
-        return Ok((
-            wgpu::CompositeAlphaMode::PreMultiplied,
-            PresentationAlphaPolicy::PreMultiplied,
-        ));
-    }
-    if alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
-        return Ok((
-            wgpu::CompositeAlphaMode::PostMultiplied,
-            PresentationAlphaPolicy::PostMultiplied,
-        ));
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Browser WebGPU exposes `GPUCanvasConfiguration.alphaMode =
+        // "premultiplied"`, but wgpu reports only `Opaque` capabilities for
+        // canvas surfaces. Configure its supported browser alpha mode directly.
+        return Ok(webgpu_transparent_presentation_alpha());
     }
 
-    Err(SurfacePresentationError::TransparentAlphaUnsupported)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+            return Ok((
+                wgpu::CompositeAlphaMode::PreMultiplied,
+                PresentationAlphaPolicy::PreMultiplied,
+            ));
+        }
+        if alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+            return Ok((
+                wgpu::CompositeAlphaMode::PostMultiplied,
+                PresentationAlphaPolicy::PostMultiplied,
+            ));
+        }
+
+        Err(SurfacePresentationError::TransparentAlphaUnsupported)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn webgpu_transparent_presentation_alpha() -> (wgpu::CompositeAlphaMode, PresentationAlphaPolicy) {
+    (
+        wgpu::CompositeAlphaMode::PreMultiplied,
+        PresentationAlphaPolicy::PreMultiplied,
+    )
 }
 
 #[cfg(test)]
@@ -404,37 +423,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transparent_alpha_selection_prefers_premultiplied_then_postmultiplied() {
+    fn transparent_alpha_selection_keeps_browser_and_native_contracts() {
+        #[cfg(target_arch = "wasm32")]
         assert_eq!(
-            select_presentation_alpha(
-                &[
-                    wgpu::CompositeAlphaMode::PostMultiplied,
-                    wgpu::CompositeAlphaMode::PreMultiplied,
-                ],
-                true,
-            ),
+            select_presentation_alpha(&[wgpu::CompositeAlphaMode::Opaque], true),
             Ok((
                 wgpu::CompositeAlphaMode::PreMultiplied,
                 PresentationAlphaPolicy::PreMultiplied,
             ))
         );
-        assert_eq!(
-            select_presentation_alpha(&[wgpu::CompositeAlphaMode::PostMultiplied], true),
-            Ok((
-                wgpu::CompositeAlphaMode::PostMultiplied,
-                PresentationAlphaPolicy::PostMultiplied,
-            ))
-        );
-        assert_eq!(
-            select_presentation_alpha(
-                &[
-                    wgpu::CompositeAlphaMode::Auto,
-                    wgpu::CompositeAlphaMode::Opaque,
-                    wgpu::CompositeAlphaMode::Inherit,
-                ],
-                true,
-            ),
-            Err(SurfacePresentationError::TransparentAlphaUnsupported)
-        );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            assert_eq!(
+                select_presentation_alpha(
+                    &[
+                        wgpu::CompositeAlphaMode::PostMultiplied,
+                        wgpu::CompositeAlphaMode::PreMultiplied,
+                    ],
+                    true,
+                ),
+                Ok((
+                    wgpu::CompositeAlphaMode::PreMultiplied,
+                    PresentationAlphaPolicy::PreMultiplied,
+                ))
+            );
+            assert_eq!(
+                select_presentation_alpha(&[wgpu::CompositeAlphaMode::PostMultiplied], true),
+                Ok((
+                    wgpu::CompositeAlphaMode::PostMultiplied,
+                    PresentationAlphaPolicy::PostMultiplied,
+                ))
+            );
+            assert_eq!(
+                select_presentation_alpha(
+                    &[
+                        wgpu::CompositeAlphaMode::Auto,
+                        wgpu::CompositeAlphaMode::Opaque,
+                        wgpu::CompositeAlphaMode::Inherit,
+                    ],
+                    true,
+                ),
+                Err(SurfacePresentationError::TransparentAlphaUnsupported)
+            );
+        }
     }
 }
