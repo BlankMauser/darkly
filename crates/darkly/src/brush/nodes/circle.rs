@@ -262,7 +262,7 @@ impl BrushNodeEvaluator for ShapeEvaluator {
                 "    var {circle_ident}_inside: u32 = 0u;\n\
                  \x20   for (var sample_y: u32 = 0u; sample_y < 4u; sample_y = sample_y + 1u) {{\n\
                  \x20       for (var sample_x: u32 = 0u; sample_x < 4u; sample_x = sample_x + 1u) {{\n\
-                 \x20           let sample_offset = (vec2<f32>(f32(sample_x), f32(sample_y)) + vec2<f32>(0.5)) * 0.25 - vec2<f32>(0.5);\n\
+                 \x20           let sample_offset = (vec2<f32>(f32(sample_x), f32(sample_y)) + vec2<f32>(0.5)) * 0.25;\n\
                  \x20           let sample_local = (local + sample_offset) * d.inv_radius_target_px;\n\
                  \x20           {circle_ident}_inside = {circle_ident}_inside + select(0u, 1u, dot(sample_local, sample_local) <= 1.0);\n\
                  \x20       }}\n\
