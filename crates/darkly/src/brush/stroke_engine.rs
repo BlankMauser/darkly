@@ -612,7 +612,6 @@ impl StrokeEngine {
         self.place_dab(
             &PaintInformation {
                 pos,
-                pressure: 1.0,
                 ..Default::default()
             },
             gpu,
