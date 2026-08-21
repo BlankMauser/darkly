@@ -130,9 +130,9 @@ impl DarklySession {
             .expect("opaque surface configuration must be supported")
     }
 
-    /// Build a handle whose document is presented as premultiplied RGBA over a
-    /// transparent browser surface. This is construction-only because the
-    /// surface alpha mode must be selected before its first render.
+    /// Build a handle whose document is presented with the alpha convention
+    /// supported by a transparent browser surface. This is construction-only
+    /// because the surface alpha mode must be selected before its first render.
     #[wasm_bindgen(js_name = createTransparentHandle)]
     pub async fn create_transparent_handle(
         &self,
@@ -214,12 +214,14 @@ impl DarklySession {
             }
         };
 
+        let presentation_alpha = gpu.presentation_alpha_policy();
         let engine = if transparent_present {
             DarklyEngine::new_with_tool_session_transparent_present(
                 gpu,
                 self.tool_session.clone(),
                 doc_width,
                 doc_height,
+                presentation_alpha,
             )
         } else {
             DarklyEngine::new_with_tool_session(

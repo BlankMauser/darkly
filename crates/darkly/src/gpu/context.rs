@@ -22,20 +22,47 @@ pub struct GpuContext {
     pub gpu: Arc<GpuDevice>,
     pub surface: Option<wgpu::Surface<'static>>,
     pub surface_config: Option<wgpu::SurfaceConfiguration>,
+    presentation_alpha: PresentationAlphaPolicy,
 }
 
-/// A requested presentation property is not supported by this surface.
+/// How the present shader must encode alpha for its configured surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentationAlphaPolicy {
+    /// Draw Darkly's normal opaque checkerboard.
+    Opaque,
+    /// Emit premultiplied RGBA for a premultiplied-alpha surface.
+    PreMultiplied,
+    /// Emit straight RGBA for a postmultiplied-alpha surface.
+    PostMultiplied,
+}
+
+impl PresentationAlphaPolicy {
+    pub const fn is_transparent(self) -> bool {
+        !matches!(self, Self::Opaque)
+    }
+
+    pub const fn shader_flag(self) -> f32 {
+        match self {
+            Self::Opaque => 0.0,
+            Self::PreMultiplied => 1.0,
+            Self::PostMultiplied => 2.0,
+        }
+    }
+}
+
+/// A requested alpha-preserving presentation property is not supported by this
+/// surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfacePresentationError {
-    /// The embedding surface cannot be configured for premultiplied alpha.
-    PremultipliedAlphaUnsupported,
+    /// The embedding surface cannot be configured to preserve alpha.
+    TransparentAlphaUnsupported,
 }
 
 impl std::fmt::Display for SurfacePresentationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PremultipliedAlphaUnsupported => {
-                f.write_str("This surface does not support premultiplied alpha presentation")
+            Self::TransparentAlphaUnsupported => {
+                f.write_str("This surface does not support alpha-preserving presentation")
             }
         }
     }
@@ -80,8 +107,9 @@ impl GpuContext {
         .expect("opaque surface configuration must be supported")
     }
 
-    /// Create a context whose surface is explicitly configured for
-    /// premultiplied-alpha presentation. Unlike [`Self::new`], this rejects a
+    /// Create a context whose surface is explicitly configured for alpha-
+    /// preserving presentation. This prefers premultiplied alpha and falls
+    /// back to postmultiplied alpha; unlike [`Self::new`], it rejects a
     /// surface that cannot preserve alpha instead of silently falling back to
     /// an opaque compositor mode.
     pub async fn new_transparent_present(
@@ -129,7 +157,7 @@ impl GpuContext {
             .await
             .expect("Failed to create device");
 
-        let surface_config = configure_surface(
+        let (surface_config, presentation_alpha) = configure_surface(
             &surface,
             &adapter,
             &device,
@@ -143,6 +171,7 @@ impl GpuContext {
             gpu: Arc::new(GpuDevice { device, queue }),
             surface: Some(surface),
             surface_config: Some(surface_config),
+            presentation_alpha,
         })
     }
 
@@ -169,8 +198,8 @@ impl GpuContext {
         .expect("opaque surface configuration must be supported")
     }
 
-    /// Attach a surface to a shared device with premultiplied-alpha
-    /// presentation. This must be chosen before the surface's first render.
+    /// Attach a surface to a shared device with alpha-preserving presentation.
+    /// This must be chosen before the surface's first render.
     pub async fn new_with_shared_device_transparent_present(
         gpu: Arc<GpuDevice>,
         instance: &wgpu::Instance,
@@ -206,7 +235,7 @@ impl GpuContext {
             .await
             .expect("Failed to find a suitable GPU adapter");
 
-        let surface_config = configure_surface(
+        let (surface_config, presentation_alpha) = configure_surface(
             &surface,
             &adapter,
             &gpu.device,
@@ -219,6 +248,7 @@ impl GpuContext {
             gpu,
             surface: Some(surface),
             surface_config: Some(surface_config),
+            presentation_alpha,
         })
     }
 
@@ -230,6 +260,7 @@ impl GpuContext {
             gpu: Arc::new(GpuDevice { device, queue }),
             surface: None,
             surface_config: None,
+            presentation_alpha: PresentationAlphaPolicy::Opaque,
         }
     }
 
@@ -241,6 +272,7 @@ impl GpuContext {
             gpu,
             surface: None,
             surface_config: None,
+            presentation_alpha: PresentationAlphaPolicy::Opaque,
         }
     }
 
@@ -249,6 +281,12 @@ impl GpuContext {
     /// device as this one.
     pub fn shared_device(&self) -> Arc<GpuDevice> {
         Arc::clone(&self.gpu)
+    }
+
+    /// The alpha convention selected while this presentation surface was
+    /// configured. Headless contexts use [`PresentationAlphaPolicy::Opaque`].
+    pub fn presentation_alpha_policy(&self) -> PresentationAlphaPolicy {
+        self.presentation_alpha
     }
 
     /// Create a command encoder, run `f`, and submit the resulting commands.
@@ -308,7 +346,7 @@ fn configure_surface(
     width: u32,
     height: u32,
     transparent_present: bool,
-) -> Result<wgpu::SurfaceConfiguration, SurfacePresentationError> {
+) -> Result<(wgpu::SurfaceConfiguration, PresentationAlphaPolicy), SurfacePresentationError> {
     let surface_caps = surface.get_capabilities(adapter);
     let surface_format = surface_caps
         .formats
@@ -317,18 +355,8 @@ fn configure_surface(
         .copied()
         .unwrap_or(surface_caps.formats[0]);
 
-    let alpha_mode = if transparent_present {
-        if surface_caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
-        {
-            wgpu::CompositeAlphaMode::PreMultiplied
-        } else {
-            return Err(SurfacePresentationError::PremultipliedAlphaUnsupported);
-        }
-    } else {
-        surface_caps.alpha_modes[0]
-    };
+    let (alpha_mode, presentation_alpha) =
+        select_presentation_alpha(&surface_caps.alpha_modes, transparent_present)?;
 
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
@@ -344,5 +372,69 @@ fn configure_surface(
         desired_maximum_frame_latency: 1,
     };
     surface.configure(device, &config);
-    Ok(config)
+    Ok((config, presentation_alpha))
+}
+
+fn select_presentation_alpha(
+    alpha_modes: &[wgpu::CompositeAlphaMode],
+    transparent_present: bool,
+) -> Result<(wgpu::CompositeAlphaMode, PresentationAlphaPolicy), SurfacePresentationError> {
+    if !transparent_present {
+        return Ok((alpha_modes[0], PresentationAlphaPolicy::Opaque));
+    }
+
+    if alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+        return Ok((
+            wgpu::CompositeAlphaMode::PreMultiplied,
+            PresentationAlphaPolicy::PreMultiplied,
+        ));
+    }
+    if alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+        return Ok((
+            wgpu::CompositeAlphaMode::PostMultiplied,
+            PresentationAlphaPolicy::PostMultiplied,
+        ));
+    }
+
+    Err(SurfacePresentationError::TransparentAlphaUnsupported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transparent_alpha_selection_prefers_premultiplied_then_postmultiplied() {
+        assert_eq!(
+            select_presentation_alpha(
+                &[
+                    wgpu::CompositeAlphaMode::PostMultiplied,
+                    wgpu::CompositeAlphaMode::PreMultiplied,
+                ],
+                true,
+            ),
+            Ok((
+                wgpu::CompositeAlphaMode::PreMultiplied,
+                PresentationAlphaPolicy::PreMultiplied,
+            ))
+        );
+        assert_eq!(
+            select_presentation_alpha(&[wgpu::CompositeAlphaMode::PostMultiplied], true),
+            Ok((
+                wgpu::CompositeAlphaMode::PostMultiplied,
+                PresentationAlphaPolicy::PostMultiplied,
+            ))
+        );
+        assert_eq!(
+            select_presentation_alpha(
+                &[
+                    wgpu::CompositeAlphaMode::Auto,
+                    wgpu::CompositeAlphaMode::Opaque,
+                    wgpu::CompositeAlphaMode::Inherit,
+                ],
+                true,
+            ),
+            Err(SurfacePresentationError::TransparentAlphaUnsupported)
+        );
+    }
 }

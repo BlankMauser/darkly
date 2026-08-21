@@ -7,6 +7,7 @@
 
 use darkly::document::Document;
 use darkly::gpu::compositor::Compositor;
+use darkly::gpu::context::PresentationAlphaPolicy;
 use std::time::Instant;
 
 /// Request a headless wgpu device (no window, no surface).
@@ -99,7 +100,7 @@ fn profile_render_pipeline() {
         width,
         height,
         doc.root_id(),
-        false,
+        PresentationAlphaPolicy::Opaque,
     );
 
     // Set up layers: bg + paint layer (gradient fill removed — GPU-only now).

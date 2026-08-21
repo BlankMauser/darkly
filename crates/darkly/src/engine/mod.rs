@@ -55,7 +55,7 @@ use crate::brush::wire::BrushWireType;
 use crate::clipboard::Clipboard;
 use crate::document::Document;
 use crate::gpu::compositor::Compositor;
-use crate::gpu::context::GpuContext;
+use crate::gpu::context::{GpuContext, PresentationAlphaPolicy};
 use crate::gpu::diff_rect::DiffRectPass;
 use crate::gpu::overlay::OverlayPrimitive;
 use crate::gpu::paint_target::PaintPipelines;
@@ -706,11 +706,35 @@ impl DarklyEngine {
     /// before this engine is created; the WASM bridge's transparent-handle
     /// constructor enforces that contract.
     pub fn new_transparent_present(gpu: GpuContext, doc_width: u32, doc_height: u32) -> Self {
+        Self::new_transparent_present_with_alpha_policy(
+            gpu,
+            doc_width,
+            doc_height,
+            PresentationAlphaPolicy::PreMultiplied,
+        )
+    }
+
+    /// Create an engine that presents onto a surface with the specified alpha
+    /// convention. The caller must configure the surface to the same policy
+    /// before its first render.
+    pub fn new_transparent_present_with_alpha_policy(
+        gpu: GpuContext,
+        doc_width: u32,
+        doc_height: u32,
+        presentation_alpha: PresentationAlphaPolicy,
+    ) -> Self {
+        debug_assert!(presentation_alpha.is_transparent());
         let session = crate::tool::SharedToolSession::new();
         session
             .write()
             .insert(crate::brush::state::BrushState::new());
-        Self::new_with_tool_session_transparent_present(gpu, session, doc_width, doc_height)
+        Self::new_with_tool_session_transparent_present(
+            gpu,
+            session,
+            doc_width,
+            doc_height,
+            presentation_alpha,
+        )
     }
 
     pub fn new_with_tool_session(
@@ -719,7 +743,13 @@ impl DarklyEngine {
         doc_width: u32,
         doc_height: u32,
     ) -> Self {
-        Self::new_with_tool_session_inner(gpu, tool_session, doc_width, doc_height, false)
+        Self::new_with_tool_session_inner(
+            gpu,
+            tool_session,
+            doc_width,
+            doc_height,
+            PresentationAlphaPolicy::Opaque,
+        )
     }
 
     /// Shared-tool-session equivalent of [`Self::new_transparent_present`].
@@ -730,8 +760,16 @@ impl DarklyEngine {
         tool_session: crate::tool::SharedToolSession,
         doc_width: u32,
         doc_height: u32,
+        presentation_alpha: PresentationAlphaPolicy,
     ) -> Self {
-        Self::new_with_tool_session_inner(gpu, tool_session, doc_width, doc_height, true)
+        debug_assert!(presentation_alpha.is_transparent());
+        Self::new_with_tool_session_inner(
+            gpu,
+            tool_session,
+            doc_width,
+            doc_height,
+            presentation_alpha,
+        )
     }
 
     fn new_with_tool_session_inner(
@@ -739,7 +777,7 @@ impl DarklyEngine {
         tool_session: crate::tool::SharedToolSession,
         doc_width: u32,
         doc_height: u32,
-        transparent_present: bool,
+        presentation_alpha: PresentationAlphaPolicy,
     ) -> Self {
         // Allocate the document first so the compositor can read its root id
         // (which replaces the legacy `ROOT_ID = 0` constant).
@@ -751,7 +789,7 @@ impl DarklyEngine {
             doc_width,
             doc_height,
             doc.root_id(),
-            transparent_present,
+            presentation_alpha,
         );
         let undo_stack = UndoStack::new(50);
         let region_scratch = RegionScratch::new(&gpu.device, doc_width, doc_height);

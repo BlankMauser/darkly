@@ -19,7 +19,8 @@ struct ViewTransform {
     row2: vec4f,
     bg: vec4f,
     // flags.x = pixel filter mode (0=linear, 1=nearest, 2=auto)
-    // flags.y = transparent-present mode (1=emit premultiplied RGBA)
+    // flags.y = presentation alpha policy (0=opaque checker, 1=premultiplied,
+    // 2=straight RGBA)
     flags: vec4f,
 }
 
@@ -61,10 +62,14 @@ struct ViewTransform {
            || canvas_y < 0.0 || canvas_y > canvas_dims.y;
 
     if view.flags.y > 0.5 {
-        // The composite cache is straight-alpha. Browser presentation expects
-        // premultiplied RGBA when the surface was configured with
-        // `PreMultiplied`, so preserve alpha and convert only at this boundary.
-        return select(vec4f(color.rgb * color.a, color.a), vec4f(0.0), oob);
+        // The composite cache is straight-alpha. Convert only for a
+        // premultiplied surface; postmultiplied surfaces receive it unchanged.
+        let presented = select(
+            vec4f(color.rgb * color.a, color.a),
+            vec4f(color.rgb, color.a),
+            view.flags.y > 1.5,
+        );
+        return select(presented, vec4f(0.0), oob);
     }
 
     // Composite the canvas over a screen-space checker so any transparency

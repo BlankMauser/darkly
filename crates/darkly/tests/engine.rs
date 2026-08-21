@@ -10,7 +10,7 @@ use darkly::brush::wire::BrushWireType;
 use darkly::document::SelectionMode;
 use darkly::engine::types::StrokeOp;
 use darkly::engine::DarklyEngine;
-use darkly::gpu::context::GpuContext;
+use darkly::gpu::context::{GpuContext, PresentationAlphaPolicy};
 use darkly::gpu::test_utils::test_device;
 use darkly::layer::LayerId;
 use darkly::nodegraph::NodeInstance;
@@ -47,10 +47,14 @@ fn test_engine(width: u32, height: u32) -> DarklyEngine {
 /// Same real-GPU test harness as `test_engine`, but through the explicit
 /// transparent-present constructor. Headless targets stand in for a browser
 /// surface; surface-alpha capability rejection belongs to the WASM bridge.
-fn transparent_present_test_engine(width: u32, height: u32) -> DarklyEngine {
+fn transparent_present_test_engine(
+    width: u32,
+    height: u32,
+    presentation_alpha: PresentationAlphaPolicy,
+) -> DarklyEngine {
     let (device, queue) = test_device();
     let gpu = GpuContext::new_headless(device, queue);
-    DarklyEngine::new_transparent_present(gpu, width, height)
+    DarklyEngine::new_transparent_present_with_alpha_policy(gpu, width, height, presentation_alpha)
 }
 
 /// Paint a horizontal brush stroke across the canvas at vertical center.
@@ -4141,11 +4145,12 @@ fn isolated_partial_alpha_blends_with_checker_not_at_full_intensity() {
 
 /// Transparent presentation is a separate opt-in path: empty document pixels
 /// must remain transparent, while the straight-alpha compositor cache must be
-/// converted to premultiplied RGBA exactly at the presentation boundary.
+/// encoded for the presentation surface exactly at the boundary.
 #[test]
-fn transparent_present_preserves_zero_alpha_and_premultiplies_partial_alpha() {
+fn transparent_present_preserves_zero_alpha_and_uses_surface_alpha_policy() {
     let (cw, ch) = (16u32, 16u32);
-    let mut engine = transparent_present_test_engine(cw, ch);
+    let mut engine =
+        transparent_present_test_engine(cw, ch, PresentationAlphaPolicy::PreMultiplied);
 
     let empty = engine.test_readback_present();
     assert_eq!(
@@ -4169,6 +4174,24 @@ fn transparent_present_preserves_zero_alpha_and_premultiplies_partial_alpha() {
     assert!(
         (120..=135).contains(&pixel[3]),
         "transparent-present must preserve the source alpha; got {pixel:?}"
+    );
+
+    let mut engine =
+        transparent_present_test_engine(cw, ch, PresentationAlphaPolicy::PostMultiplied);
+    let red = engine.add_raster_layer(None);
+    fill_layer(&mut engine, red, 255, 0, 0);
+    engine.set_opacity(red, 0.5);
+    engine.test_flush_readbacks();
+    engine.render(0.0);
+
+    let pixel = rgba_at(&engine.test_readback_present(), cw, cw / 2, ch / 2);
+    assert!(
+        pixel[0] >= 250 && pixel[1] <= 2 && pixel[2] <= 2,
+        "postmultiplied presentation must preserve straight red; got {pixel:?}"
+    );
+    assert!(
+        (120..=135).contains(&pixel[3]),
+        "postmultiplied presentation must preserve the source alpha; got {pixel:?}"
     );
 }
 

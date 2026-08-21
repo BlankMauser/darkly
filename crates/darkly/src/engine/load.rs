@@ -418,7 +418,7 @@ fn install_staging(
     // slotmap. Building a fresh one is the simplest correct route —
     // every old texture / bind group / passthrough state is dropped.
     engine.doc = staging;
-    let transparent_present = engine.compositor.transparent_present();
+    let presentation_alpha = engine.compositor.presentation_alpha_policy();
     engine.compositor = Compositor::new(
         &engine.gpu.device,
         &engine.gpu.queue,
@@ -426,7 +426,7 @@ fn install_staging(
         engine.doc.width,
         engine.doc.height,
         engine.doc.root_id(),
-        transparent_present,
+        presentation_alpha,
     );
 
     upload_loaded_pixels(engine, manifest, &id_map, entries);
