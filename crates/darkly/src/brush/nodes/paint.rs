@@ -88,6 +88,7 @@ impl PerBrushPipeline {
         ctx: &BuildContext,
         compiled: &CompiledBrush,
         scratch_format: wgpu::TextureFormat,
+        accumulation: PaintAccumulation,
     ) -> Self {
         let shader = ctx
             .device
@@ -162,21 +163,10 @@ impl PerBrushPipeline {
                 }),
         };
 
-        // Premultiplied source-over: scratch accumulates coverage. See
-        // the `paint_pipeline` field doc above for why there's no erase
-        // variant at this stage.
-        let paint_blend = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                operation: wgpu::BlendOperation::Add,
-            },
-        };
+        // The ordinary terminal accumulates premultiplied source-over. The
+        // DoughDraw-only precise terminal instead keeps the greatest sampled
+        // coverage for its currently restricted, fixed-color round brush.
+        let paint_blend = accumulation.blend_state();
 
         let paint_pipeline = ctx
             .device
@@ -316,11 +306,12 @@ impl PaintPipeline {
         ctx: &BuildContext,
         compiled: &CompiledBrush,
         scratch_format: wgpu::TextureFormat,
+        accumulation: PaintAccumulation,
     ) {
         let mut cache = self.cache.borrow_mut();
-        cache
-            .entry(compiled.topology_hash)
-            .or_insert_with(|| PerBrushPipeline::build(ctx, compiled, scratch_format));
+        cache.entry(compiled.topology_hash).or_insert_with(|| {
+            PerBrushPipeline::build(ctx, compiled, scratch_format, accumulation)
+        });
     }
 
     /// Run a closure with the per-brush pipeline. Panics if the
@@ -354,9 +345,9 @@ impl BrushPipelineEntry for PaintPipeline {
     }
 }
 
-fn paint_pipeline_reg() -> BrushPipelineRegistration {
+fn paint_pipeline_reg(id: &'static str) -> BrushPipelineRegistration {
     BrushPipelineRegistration {
-        id: "paint",
+        id,
         build: |ctx| Box::new(PaintPipeline::build(ctx)),
     }
 }
@@ -365,18 +356,64 @@ fn paint_pipeline_reg() -> BrushPipelineRegistration {
 
 pub const TYPE_ID: &str = "paint";
 
+#[derive(Clone, Copy)]
+pub(crate) enum PaintAccumulation {
+    SourceOver,
+    MaxCoverage,
+}
+
+impl PaintAccumulation {
+    fn blend_state(self) -> wgpu::BlendState {
+        match self {
+            // Keep ordinary paint byte-for-byte on its established
+            // premultiplied source-over path. The precise terminal is the
+            // only opt-in alternate accumulation policy.
+            Self::SourceOver => wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            },
+            Self::MaxCoverage => wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Max,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Max,
+                },
+            },
+        }
+    }
+}
+
 pub fn register() -> BrushNodeRegistration {
-    register_with_format(TYPE_ID, "Paint", crate::brush::node::COLOR_SCRATCH_FORMAT)
+    register_with_format(
+        TYPE_ID,
+        "Paint",
+        crate::brush::node::COLOR_SCRATCH_FORMAT,
+        source_over_evaluator,
+    )
 }
 
 pub(crate) fn register_with_format(
     type_id: &'static str,
     display_name: &'static str,
     scratch_format: wgpu::TextureFormat,
+    evaluator: fn() -> Box<dyn BrushNodeEvaluator>,
 ) -> BrushNodeRegistration {
     BrushNodeRegistration {
-        pipelines: vec![paint_pipeline_reg()],
-        evaluator: || Box::new(PaintEvaluator),
+        pipelines: vec![paint_pipeline_reg(type_id)],
+        evaluator,
         lifecycle: crate::brush::node::Lifecycle::ClearScratchToTransparent,
         scratch_format,
         node: NodeRegistration {
@@ -431,7 +468,24 @@ pub(crate) fn register_with_format(
     }
 }
 
-pub struct PaintEvaluator;
+pub struct PaintEvaluator {
+    pipeline_id: &'static str,
+    accumulation: PaintAccumulation,
+}
+
+fn source_over_evaluator() -> Box<dyn BrushNodeEvaluator> {
+    Box::new(PaintEvaluator {
+        pipeline_id: TYPE_ID,
+        accumulation: PaintAccumulation::SourceOver,
+    })
+}
+
+pub(crate) fn max_coverage_evaluator() -> Box<dyn BrushNodeEvaluator> {
+    Box::new(PaintEvaluator {
+        pipeline_id: super::paint_precise::TYPE_ID,
+        accumulation: PaintAccumulation::MaxCoverage,
+    })
+}
 
 impl PaintEvaluator {
     fn effective_radius(ctx: &EvalContext) -> f32 {
@@ -526,7 +580,7 @@ impl BrushNodeEvaluator for PaintEvaluator {
         gpu.perf
             .record_dab_flush_workload(total_dabs, union_w, union_h);
 
-        let pipeline_ref = gpu.pipelines.get::<PaintPipeline>("paint");
+        let pipeline_ref = gpu.pipelines.get::<PaintPipeline>(self.pipeline_id);
 
         // Build the per-brush pipeline if this is the first dab for
         // this hash. The BuildContext borrows pieces from
@@ -534,7 +588,7 @@ impl BrushNodeEvaluator for PaintEvaluator {
         // local BuildContext built from the gpu_context's wgpu refs.
         // Note: this is a one-shot build per brush, so the cost is
         // amortised across thousands of dabs.
-        ensure_per_brush_pipeline(gpu, pipeline_ref, &compiled);
+        ensure_per_brush_pipeline(gpu, pipeline_ref, &compiled, self.accumulation);
 
         let stroke = gpu
             .stroke
@@ -741,6 +795,7 @@ fn ensure_per_brush_pipeline(
     gpu: &BrushGpuContext,
     pipe: &PaintPipeline,
     compiled: &CompiledBrush,
+    accumulation: PaintAccumulation,
 ) {
     // Skip the work entirely if the pipeline is already cached.
     if pipe.cache.borrow().contains_key(&compiled.topology_hash) {
@@ -762,5 +817,5 @@ fn ensure_per_brush_pipeline(
         .as_ref()
         .map(|stroke| stroke.scratch.format())
         .unwrap_or(crate::brush::node::COLOR_SCRATCH_FORMAT);
-    pipe.ensure_pipeline(&ctx, compiled, scratch_format);
+    pipe.ensure_pipeline(&ctx, compiled, scratch_format, accumulation);
 }
