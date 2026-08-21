@@ -1314,10 +1314,6 @@ impl DarklyEngine {
                     &mut gpu_ctx,
                 );
                 self.brush_perf += gpu_ctx.submit_final();
-
-                let mut gpu_ctx = make_gpu_ctx!("doughdraw-canonical-commit");
-                engine.commit(&mut gpu_ctx);
-                self.brush_perf += gpu_ctx.submit_final();
             } else if let Some(div_idx) = div_idx {
                 // Divergence — try checkpoint-based partial re-render.
                 // The terminal's `begin_stroke` establishes outside-bbox
