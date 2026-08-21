@@ -24,6 +24,25 @@ pub struct GpuContext {
     pub surface_config: Option<wgpu::SurfaceConfiguration>,
 }
 
+/// A requested presentation property is not supported by this surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfacePresentationError {
+    /// The embedding surface cannot be configured for premultiplied alpha.
+    PremultipliedAlphaUnsupported,
+}
+
+impl std::fmt::Display for SurfacePresentationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PremultipliedAlphaUnsupported => {
+                f.write_str("This surface does not support premultiplied alpha presentation")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SurfacePresentationError {}
+
 // Field access through `Deref` lets the engine keep using `self.gpu.device`
 // and `self.gpu.queue` everywhere — `self.gpu` is a `GpuContext`, has no
 // `device` field, autoderefs to `GpuDevice`, finds it.
@@ -49,6 +68,48 @@ impl GpuContext {
         initial_width: u32,
         initial_height: u32,
     ) -> Self {
+        Self::new_inner(
+            instance,
+            surface,
+            limits,
+            initial_width,
+            initial_height,
+            false,
+        )
+        .await
+        .expect("opaque surface configuration must be supported")
+    }
+
+    /// Create a context whose surface is explicitly configured for
+    /// premultiplied-alpha presentation. Unlike [`Self::new`], this rejects a
+    /// surface that cannot preserve alpha instead of silently falling back to
+    /// an opaque compositor mode.
+    pub async fn new_transparent_present(
+        instance: wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        limits: wgpu::Limits,
+        initial_width: u32,
+        initial_height: u32,
+    ) -> Result<Self, SurfacePresentationError> {
+        Self::new_inner(
+            instance,
+            surface,
+            limits,
+            initial_width,
+            initial_height,
+            true,
+        )
+        .await
+    }
+
+    async fn new_inner(
+        instance: wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        limits: wgpu::Limits,
+        initial_width: u32,
+        initial_height: u32,
+        transparent_present: bool,
+    ) -> Result<Self, SurfacePresentationError> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -68,15 +129,21 @@ impl GpuContext {
             .await
             .expect("Failed to create device");
 
-        let surface_config =
-            configure_surface(&surface, &adapter, &device, initial_width, initial_height);
+        let surface_config = configure_surface(
+            &surface,
+            &adapter,
+            &device,
+            initial_width,
+            initial_height,
+            transparent_present,
+        )?;
 
-        GpuContext {
+        Ok(GpuContext {
             #[allow(clippy::arc_with_non_send_sync)] // see GpuDevice docs
             gpu: Arc::new(GpuDevice { device, queue }),
             surface: Some(surface),
             surface_config: Some(surface_config),
-        }
+        })
     }
 
     /// Build a context that re-uses an existing shared `GpuDevice`. Use this
@@ -90,6 +157,46 @@ impl GpuContext {
         initial_width: u32,
         initial_height: u32,
     ) -> Self {
+        Self::new_with_shared_device_inner(
+            gpu,
+            instance,
+            surface,
+            initial_width,
+            initial_height,
+            false,
+        )
+        .await
+        .expect("opaque surface configuration must be supported")
+    }
+
+    /// Attach a surface to a shared device with premultiplied-alpha
+    /// presentation. This must be chosen before the surface's first render.
+    pub async fn new_with_shared_device_transparent_present(
+        gpu: Arc<GpuDevice>,
+        instance: &wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        initial_width: u32,
+        initial_height: u32,
+    ) -> Result<Self, SurfacePresentationError> {
+        Self::new_with_shared_device_inner(
+            gpu,
+            instance,
+            surface,
+            initial_width,
+            initial_height,
+            true,
+        )
+        .await
+    }
+
+    async fn new_with_shared_device_inner(
+        gpu: Arc<GpuDevice>,
+        instance: &wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        initial_width: u32,
+        initial_height: u32,
+        transparent_present: bool,
+    ) -> Result<Self, SurfacePresentationError> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -105,13 +212,14 @@ impl GpuContext {
             &gpu.device,
             initial_width,
             initial_height,
-        );
+            transparent_present,
+        )?;
 
-        GpuContext {
+        Ok(GpuContext {
             gpu,
             surface: Some(surface),
             surface_config: Some(surface_config),
-        }
+        })
     }
 
     /// Create a headless GPU context — no surface or window needed.
@@ -199,7 +307,8 @@ fn configure_surface(
     device: &wgpu::Device,
     width: u32,
     height: u32,
-) -> wgpu::SurfaceConfiguration {
+    transparent_present: bool,
+) -> Result<wgpu::SurfaceConfiguration, SurfacePresentationError> {
     let surface_caps = surface.get_capabilities(adapter);
     let surface_format = surface_caps
         .formats
@@ -208,13 +317,26 @@ fn configure_surface(
         .copied()
         .unwrap_or(surface_caps.formats[0]);
 
+    let alpha_mode = if transparent_present {
+        if surface_caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+        {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            return Err(SurfacePresentationError::PremultipliedAlphaUnsupported);
+        }
+    } else {
+        surface_caps.alpha_modes[0]
+    };
+
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         format: surface_format,
         width,
         height,
         present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: surface_caps.alpha_modes[0],
+        alpha_mode,
         view_formats: vec![],
         // One queued frame, not wgpu's default of two: a paint app wants the
         // freshest stroke on screen, so trade present-queue depth (throughput
@@ -222,5 +344,5 @@ fn configure_surface(
         desired_maximum_frame_latency: 1,
     };
     surface.configure(device, &config);
-    config
+    Ok(config)
 }

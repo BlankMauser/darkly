@@ -701,11 +701,45 @@ impl DarklyEngine {
         Self::new_with_tool_session(gpu, session, doc_width, doc_height)
     }
 
+    /// Create an engine that presents its document as premultiplied RGBA.
+    /// The embedding surface must have been configured for premultiplied alpha
+    /// before this engine is created; the WASM bridge's transparent-handle
+    /// constructor enforces that contract.
+    pub fn new_transparent_present(gpu: GpuContext, doc_width: u32, doc_height: u32) -> Self {
+        let session = crate::tool::SharedToolSession::new();
+        session
+            .write()
+            .insert(crate::brush::state::BrushState::new());
+        Self::new_with_tool_session_transparent_present(gpu, session, doc_width, doc_height)
+    }
+
     pub fn new_with_tool_session(
         gpu: GpuContext,
         tool_session: crate::tool::SharedToolSession,
         doc_width: u32,
         doc_height: u32,
+    ) -> Self {
+        Self::new_with_tool_session_inner(gpu, tool_session, doc_width, doc_height, false)
+    }
+
+    /// Shared-tool-session equivalent of [`Self::new_transparent_present`].
+    /// This is intentionally construction-only: changing it later would leave
+    /// the already-configured presentation surface and shader mode disagreeing.
+    pub fn new_with_tool_session_transparent_present(
+        gpu: GpuContext,
+        tool_session: crate::tool::SharedToolSession,
+        doc_width: u32,
+        doc_height: u32,
+    ) -> Self {
+        Self::new_with_tool_session_inner(gpu, tool_session, doc_width, doc_height, true)
+    }
+
+    fn new_with_tool_session_inner(
+        gpu: GpuContext,
+        tool_session: crate::tool::SharedToolSession,
+        doc_width: u32,
+        doc_height: u32,
+        transparent_present: bool,
     ) -> Self {
         // Allocate the document first so the compositor can read its root id
         // (which replaces the legacy `ROOT_ID = 0` constant).
@@ -717,6 +751,7 @@ impl DarklyEngine {
             doc_width,
             doc_height,
             doc.root_id(),
+            transparent_present,
         );
         let undo_stack = UndoStack::new(50);
         let region_scratch = RegionScratch::new(&gpu.device, doc_width, doc_height);

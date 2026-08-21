@@ -728,6 +728,10 @@ pub struct Compositor {
     /// when zoom > 1, linear otherwise — decided in the shader from the
     /// matrix). Stamped onto `flags[0]` of the transform on upload.
     pixel_filter: f32,
+    /// Present document pixels as premultiplied RGBA on a transparent surface
+    /// instead of Darkly's ordinary checkerboard. Immutable because the
+    /// surface alpha mode is selected before first render.
+    transparent_present: bool,
 
     // --- Content Bounds (GPU compute) ---
     content_bounds: ContentBoundsPass,
@@ -882,6 +886,7 @@ impl Compositor {
         width: u32,
         height: u32,
         root_id: LayerId,
+        transparent_present: bool,
     ) -> Self {
         // Accumulator dimensions match layer textures exactly (no tile padding).
         let padded_w = width;
@@ -1009,7 +1014,8 @@ impl Compositor {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let identity = ViewTransform::identity();
+        let mut identity = ViewTransform::identity();
+        identity.flags[1] = transparent_present as u8 as f32;
         queue.write_buffer(&view_uniform_buf, 0, bytemuck::bytes_of(&identity));
 
         // Present pipeline: blit accumulator to surface
@@ -1215,6 +1221,7 @@ impl Compositor {
             cached_view_transform: identity,
             viewport_bg: DEFAULT_WORKSPACE_BG,
             pixel_filter: pixel_filter_from_config(),
+            transparent_present,
             frame_count: 0,
             last_wall_time: 0.0,
             dirty_procedural_scratch: Vec::new(),
@@ -3035,8 +3042,15 @@ impl Compositor {
         let mut t = *transform;
         t.bg = self.viewport_bg;
         t.flags[0] = self.pixel_filter;
+        t.flags[1] = self.transparent_present as u8 as f32;
         queue.write_buffer(&self.view_uniform_buf, 0, bytemuck::bytes_of(&t));
         self.cached_view_transform = t;
+    }
+
+    /// Whether this compositor's immutable presentation mode emits
+    /// premultiplied RGBA instead of the ordinary opaque checkerboard.
+    pub fn transparent_present(&self) -> bool {
+        self.transparent_present
     }
 
     /// Set the workspace background color (the area shown outside the canvas
@@ -3253,7 +3267,11 @@ impl Compositor {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(if self.transparent_present {
+                            wgpu::Color::TRANSPARENT
+                        } else {
+                            wgpu::Color::BLACK
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -3273,6 +3291,11 @@ impl Compositor {
             &self.present_to_veil_pipeline,
             &self.present_cache_bind_group,
             &self.tool_overlay,
+            if self.transparent_present {
+                wgpu::Color::TRANSPARENT
+            } else {
+                wgpu::Color::BLACK
+            },
         );
     }
 

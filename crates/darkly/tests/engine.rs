@@ -44,6 +44,15 @@ fn test_engine(width: u32, height: u32) -> DarklyEngine {
     DarklyEngine::new(gpu, width, height)
 }
 
+/// Same real-GPU test harness as `test_engine`, but through the explicit
+/// transparent-present constructor. Headless targets stand in for a browser
+/// surface; surface-alpha capability rejection belongs to the WASM bridge.
+fn transparent_present_test_engine(width: u32, height: u32) -> DarklyEngine {
+    let (device, queue) = test_device();
+    let gpu = GpuContext::new_headless(device, queue);
+    DarklyEngine::new_transparent_present(gpu, width, height)
+}
+
 /// Paint a horizontal brush stroke across the canvas at vertical center.
 fn paint_full_stroke(engine: &mut DarklyEngine, layer_id: LayerId, w: u32, h: u32) {
     engine.begin_stroke(layer_id);
@@ -4127,6 +4136,39 @@ fn isolated_partial_alpha_blends_with_checker_not_at_full_intensity() {
         cell_a, cell_b,
         "adjacent checker cells must differ under the translucent layer — \
          identical pixels mean the present shader is binarizing alpha."
+    );
+}
+
+/// Transparent presentation is a separate opt-in path: empty document pixels
+/// must remain transparent, while the straight-alpha compositor cache must be
+/// converted to premultiplied RGBA exactly at the presentation boundary.
+#[test]
+fn transparent_present_preserves_zero_alpha_and_premultiplies_partial_alpha() {
+    let (cw, ch) = (16u32, 16u32);
+    let mut engine = transparent_present_test_engine(cw, ch);
+
+    let empty = engine.test_readback_present();
+    assert_eq!(
+        rgba_at(&empty, cw, 0, 0),
+        [0, 0, 0, 0],
+        "transparent-present must not replace an empty document with a checker or opaque clear"
+    );
+
+    let red = engine.add_raster_layer(None);
+    fill_layer(&mut engine, red, 255, 0, 0);
+    engine.set_opacity(red, 0.5);
+    engine.test_flush_readbacks();
+    engine.render(0.0);
+
+    let pixels = engine.test_readback_present();
+    let pixel = rgba_at(&pixels, cw, cw / 2, ch / 2);
+    assert!(
+        (120..=135).contains(&pixel[0]) && pixel[1] <= 2 && pixel[2] <= 2,
+        "transparent-present must premultiply straight red by 0.5; got {pixel:?}"
+    );
+    assert!(
+        (120..=135).contains(&pixel[3]),
+        "transparent-present must preserve the source alpha; got {pixel:?}"
     );
 }
 

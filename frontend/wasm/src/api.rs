@@ -125,6 +125,34 @@ impl DarklySession {
         doc_width: u32,
         doc_height: u32,
     ) -> DarklyHandle {
+        self.create_handle_inner(canvas, doc_width, doc_height, false)
+            .await
+            .expect("opaque surface configuration must be supported")
+    }
+
+    /// Build a handle whose document is presented as premultiplied RGBA over a
+    /// transparent browser surface. This is construction-only because the
+    /// surface alpha mode must be selected before its first render.
+    #[wasm_bindgen(js_name = createTransparentHandle)]
+    pub async fn create_transparent_handle(
+        &self,
+        canvas: web_sys::HtmlCanvasElement,
+        doc_width: u32,
+        doc_height: u32,
+    ) -> Result<DarklyHandle, JsError> {
+        self.create_handle_inner(canvas, doc_width, doc_height, true)
+            .await
+    }
+}
+
+impl DarklySession {
+    async fn create_handle_inner(
+        &self,
+        canvas: web_sys::HtmlCanvasElement,
+        doc_width: u32,
+        doc_height: u32,
+        transparent_present: bool,
+    ) -> Result<DarklyHandle, JsError> {
         let initial_width = canvas.width();
         let initial_height = canvas.height();
 
@@ -136,37 +164,72 @@ impl DarklySession {
         let existing = self.gpu.borrow().clone();
         let gpu = match existing {
             Some(shared) => {
-                GpuContext::new_with_shared_device(
-                    shared,
-                    &self.instance,
-                    surface,
-                    initial_width,
-                    initial_height,
-                )
-                .await
+                if transparent_present {
+                    GpuContext::new_with_shared_device_transparent_present(
+                        shared,
+                        &self.instance,
+                        surface,
+                        initial_width,
+                        initial_height,
+                    )
+                    .await
+                    .map_err(|error| JsError::new(&error.to_string()))?
+                } else {
+                    GpuContext::new_with_shared_device(
+                        shared,
+                        &self.instance,
+                        surface,
+                        initial_width,
+                        initial_height,
+                    )
+                    .await
+                }
             }
             None => {
-                let ctx = GpuContext::new(
-                    self.instance.clone(),
-                    surface,
-                    darkly::gpu::vector_renderer::required_limits(
-                        wgpu::Limits::downlevel_webgl2_defaults(),
-                    ),
-                    initial_width,
-                    initial_height,
-                )
-                .await;
+                let limits = darkly::gpu::vector_renderer::required_limits(
+                    wgpu::Limits::downlevel_webgl2_defaults(),
+                );
+                let ctx = if transparent_present {
+                    GpuContext::new_transparent_present(
+                        self.instance.clone(),
+                        surface,
+                        limits,
+                        initial_width,
+                        initial_height,
+                    )
+                    .await
+                    .map_err(|error| JsError::new(&error.to_string()))?
+                } else {
+                    GpuContext::new(
+                        self.instance.clone(),
+                        surface,
+                        limits,
+                        initial_width,
+                        initial_height,
+                    )
+                    .await
+                };
                 *self.gpu.borrow_mut() = Some(ctx.shared_device());
                 ctx
             }
         };
 
-        DarklyHandle::from_engine(DarklyEngine::new_with_tool_session(
-            gpu,
-            self.tool_session.clone(),
-            doc_width,
-            doc_height,
-        ))
+        let engine = if transparent_present {
+            DarklyEngine::new_with_tool_session_transparent_present(
+                gpu,
+                self.tool_session.clone(),
+                doc_width,
+                doc_height,
+            )
+        } else {
+            DarklyEngine::new_with_tool_session(
+                gpu,
+                self.tool_session.clone(),
+                doc_width,
+                doc_height,
+            )
+        };
+        Ok(DarklyHandle::from_engine(engine))
     }
 }
 

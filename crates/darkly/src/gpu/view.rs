@@ -55,6 +55,8 @@ pub struct ViewTransform {
     /// `flags[0]` = pixel filter mode: 0 = linear, 1 = nearest, 2 = auto
     /// (nearest when zoom > 1, linear otherwise — decided in the shader
     /// from the inverse-zoom magnitude of `row0.xy`).
+    /// `flags[1]` = transparent presentation: 0 = checker/opaque, 1 =
+    /// premultiplied document RGBA over a transparent surface.
     pub flags: [f32; 4],
 }
 

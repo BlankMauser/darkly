@@ -326,6 +326,7 @@ impl VeilChain {
         present_pipeline: &wgpu::RenderPipeline,
         present_bind_group: &wgpu::BindGroup,
         overlay: &crate::gpu::overlay::ToolOverlay,
+        surface_clear: wgpu::Color,
     ) {
         let veil_views = self.views.as_ref().unwrap();
 
@@ -338,7 +339,7 @@ impl VeilChain {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(surface_clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -401,7 +402,7 @@ impl VeilChain {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(surface_clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

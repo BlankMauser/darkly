@@ -99,6 +99,7 @@ fn profile_render_pipeline() {
         width,
         height,
         doc.root_id(),
+        false,
     );
 
     // Set up layers: bg + paint layer (gradient fill removed — GPU-only now).
