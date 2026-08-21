@@ -39,6 +39,10 @@ const ALGO_SUPERFORMULA: u32 = 2;
 
 pub const TYPE_ID: &str = "circle";
 
+/// Private coverage selector for the DoughDraw adapter. It deliberately has
+/// no editor option: fixed-point replay coverage is not a Darkly brush policy.
+pub(crate) const DOUGHDRAW_Q8_COVERAGE: i32 = 2;
+
 pub fn register() -> BrushNodeRegistration {
     BrushNodeRegistration {
         pipelines: vec![],
@@ -257,7 +261,35 @@ impl BrushNodeEvaluator for ShapeEvaluator {
         // softness == 0.
         let params_ident = cctx.ident("circle_params");
         let circle_ident = cctx.ident("circle");
-        let body = if coverage == 1 {
+        let body = if coverage == DOUGHDRAW_Q8_COVERAGE {
+            // The DoughDraw adapter sends Q8 centres and radii. Reconstructing
+            // coverage from interpolated `target_pos` can move an edge sample
+            // across the circle on some GPUs, so this mode derives the pixel
+            // base from the fragment coordinate and compares the original Q8
+            // squared distances. It is opt-in: ordinary Darkly brushes retain
+            // their existing smooth and sampled coverage paths.
+            format!(
+                "    let {circle_ident}_pixel_base_q8 = vec2<i32>(round(in.clip.xy * 256.0)) - vec2<i32>(128, 128);\n\
+                 \x20   let {circle_ident}_layer_q8 = vec2<i32>(u.intrinsic.layer_offset) * 256;\n\
+                 \x20   let {circle_ident}_center_q8 = vec2<i32>(round(d.pos * 256.0));\n\
+                 \x20   let {circle_ident}_radius_q8 = u32(round((1.0 / d.inv_radius_target_px) * 256.0));\n\
+                 \x20   let {circle_ident}_radius_squared = {circle_ident}_radius_q8 * {circle_ident}_radius_q8;\n\
+                 \x20   var {circle_ident}_inside: u32 = 0u;\n\
+                 \x20   for (var sample_y: u32 = 0u; sample_y < 4u; sample_y = sample_y + 1u) {{\n\
+                 \x20       for (var sample_x: u32 = 0u; sample_x < 4u; sample_x = sample_x + 1u) {{\n\
+                 \x20           let sample_q8 = {circle_ident}_pixel_base_q8 + {circle_ident}_layer_q8 + vec2<i32>(i32(sample_x * 64u + 32u), i32(sample_y * 64u + 32u));\n\
+                 \x20           let delta_q8 = sample_q8 - {circle_ident}_center_q8;\n\
+                 \x20           let delta_x = u32(abs(delta_q8.x));\n\
+                 \x20           let delta_y = u32(abs(delta_q8.y));\n\
+                 \x20           let delta_x_squared = delta_x * delta_x;\n\
+                 \x20           let delta_y_squared = delta_y * delta_y;\n\
+                 \x20           let inside = delta_x <= {circle_ident}_radius_q8 && delta_y <= {circle_ident}_radius_q8 && delta_x_squared <= {circle_ident}_radius_squared && delta_y_squared <= {circle_ident}_radius_squared - delta_x_squared;\n\
+                 \x20           {circle_ident}_inside = {circle_ident}_inside + select(0u, 1u, inside);\n\
+                 \x20       }}\n\
+                 \x20   }}\n\
+                 \x20   let {circle_ident}: f32 = f32(({circle_ident}_inside * 255u + 8u) / 16u) / 255.0;\n",
+            )
+        } else if coverage == 1 {
             format!(
                 "    var {circle_ident}_inside: u32 = 0u;\n\
                  \x20   for (var sample_y: u32 = 0u; sample_y < 4u; sample_y = sample_y + 1u) {{\n\
@@ -336,7 +368,7 @@ impl BrushNodeEvaluator for ShapeEvaluator {
         let aspect_max = ctx.port_max_value("aspect").max(0.01);
         let aniso_max = (1.0 / aspect_min).max(aspect_max).max(1.0);
         let passthrough = base * aniso_max;
-        if ctx.port_enum("coverage") == 1 {
+        if ctx.port_enum("coverage") >= 1 {
             // The furthest 4×4 sample is 3/8 px from the fragment centre on
             // each axis. The shared wrapper clips by radial distance before
             // this node runs, so retain the diagonal halo or sub-50% edge

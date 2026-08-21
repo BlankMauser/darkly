@@ -113,7 +113,11 @@ pub fn compile_brush_program_v1(
             "Darkly default graph has no circle",
         ))?;
     graph
-        .set_port_value(&circle, "coverage", InputValue::Int(1))
+        .set_port_value(
+            &circle,
+            "coverage",
+            InputValue::Int(brush::nodes::circle::DOUGHDRAW_Q8_COVERAGE),
+        )
         .map_err(|_| DoughDrawBrushProgramError::Invalid("Darkly coverage input rejected"))?;
     brush::compile_graph(&graph)
         .map_err(|_| DoughDrawBrushProgramError::Invalid("Darkly graph did not compile"))?;
@@ -197,13 +201,28 @@ mod tests {
             .values()
             .find(|node| node.type_id == "circle")
             .unwrap();
-        assert!(circle
-            .ports
-            .iter()
-            .any(|port| { port.name == "coverage" && port.value == InputValue::Int(1) }));
+        assert!(circle.ports.iter().any(|port| {
+            port.name == "coverage"
+                && port.value == InputValue::Int(brush::nodes::circle::DOUGHDRAW_Q8_COVERAGE)
+        }));
         let runner = brush::compile_graph(&graph).unwrap();
         assert_eq!(runner.scratch_format(), wgpu::TextureFormat::Rgba16Float);
         assert!(runner.compiled_brush().unwrap().brush_extent_extra_px > 0.5);
+        let compiled = runner.compiled_brush().unwrap();
+        for source in [&compiled.stroke_wgsl, &compiled.cursor_preview_wgsl] {
+            let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|error| {
+                panic!(
+                    "DoughDraw Q8 shader parse failed: {}",
+                    error.emit_to_string(source)
+                )
+            });
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .expect("DoughDraw Q8 shader validation failed");
+        }
     }
 
     #[test]
