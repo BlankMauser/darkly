@@ -29,6 +29,53 @@ pub struct DoughDrawBrushProgramV1 {
     pub bitmap_tip_hash_hex: Option<String>,
 }
 
+/// One resolved DoughDraw round-brush dab.
+///
+/// Coordinates and radius use DoughDraw's Q8 fixed-point units so replay
+/// sends the same values to every renderer. This is deliberately narrower
+/// than a generic graph input: `compile_brush_program_v1` remains the gate
+/// for the only brush shape this adapter can reproduce exactly today.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+pub struct DoughDrawCanonicalRoundDabV1 {
+    pub center_x_q8: i32,
+    pub center_y_q8: i32,
+    pub radius_q8: u16,
+    pub opacity_u16: u16,
+    pub color_rgba8: [u8; 4],
+}
+
+impl DoughDrawCanonicalRoundDabV1 {
+    pub fn radius_px(self) -> f32 {
+        self.radius_q8 as f32 / 256.0
+    }
+
+    pub fn center_px(self) -> [f32; 2] {
+        [
+            self.center_x_q8 as f32 / 256.0,
+            self.center_y_q8 as f32 / 256.0,
+        ]
+    }
+
+    pub fn color(self) -> [f32; 4] {
+        let opacity = self.opacity_u16 as f32 / u16::MAX as f32;
+        [
+            self.color_rgba8[0] as f32 / u8::MAX as f32,
+            self.color_rgba8[1] as f32 / u8::MAX as f32,
+            self.color_rgba8[2] as f32 / u8::MAX as f32,
+            (self.color_rgba8[3] as f32 / u8::MAX as f32) * opacity,
+        ]
+    }
+
+    pub fn validate(self) -> Result<(), DoughDrawBrushProgramError> {
+        if self.radius_q8 == 0 {
+            return Err(DoughDrawBrushProgramError::Invalid("canonical dab radius"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DoughDrawBrushProgramError {
     #[error("invalid DoughDraw brush program: {0}")]
@@ -166,6 +213,30 @@ mod tests {
         assert!(matches!(
             compile_brush_program_v1(&program),
             Err(DoughDrawBrushProgramError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn canonical_round_dab_preserves_fixed_point_inputs() {
+        let dab = DoughDrawCanonicalRoundDabV1 {
+            center_x_q8: -384,
+            center_y_q8: 640,
+            radius_q8: 1_024,
+            opacity_u16: 32_768,
+            color_rgba8: [23, 44, 63, 255],
+        };
+
+        assert_eq!(dab.center_px(), [-1.5, 2.5]);
+        assert_eq!(dab.radius_px(), 4.0);
+        assert_eq!(dab.color()[3], 32_768.0 / 65_535.0);
+        assert!(dab.validate().is_ok());
+        assert!(matches!(
+            DoughDrawCanonicalRoundDabV1 {
+                radius_q8: 0,
+                ..dab
+            }
+            .validate(),
+            Err(DoughDrawBrushProgramError::Invalid("canonical dab radius"))
         ));
     }
 }

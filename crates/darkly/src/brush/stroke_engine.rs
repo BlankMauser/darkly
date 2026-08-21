@@ -67,6 +67,10 @@ pub struct StrokeEngine {
     /// Running dab index within the stroke.
     dab_count: u32,
 
+    /// Fixed colour accepted by the DoughDraw canonical-dab ingress. The
+    /// maximum-coverage accumulator is exact only when all dabs share it.
+    canonical_color_rgba8: Option<[u8; 4]>,
+
     /// Stroke seed for deterministic per-dab randomness.  Passed to
     /// the runner so random nodes can generate independent sequences.
     stroke_seed: u32,
@@ -136,6 +140,7 @@ impl StrokeEngine {
             last_dab_size: [d, d],
             last_dab_pos: None,
             dab_count: 0,
+            canonical_color_rgba8: None,
             stroke_seed,
             clone_source_anchor,
             clone_dest_anchor: None,
@@ -586,6 +591,49 @@ impl StrokeEngine {
         // Phase-end flush for compute-path terminals. See sibling call
         // in `render_from_stabilized_range_to`.
         self.runner.flush_dabs(gpu);
+    }
+
+    /// Render one already-resolved DoughDraw round dab without stabilizing,
+    /// interpolating, or applying Darkly's spacing policy.
+    ///
+    /// The adapter's wire values are fixed point, so repeating the same dab
+    /// stream selects the same centres, radii, and alpha on every replay.
+    pub fn render_canonical_round_dab(
+        &mut self,
+        pos: [f32; 2],
+        radius_px: f32,
+        color: [f32; 4],
+        gpu: &mut BrushGpuContext,
+    ) {
+        debug_assert!(radius_px.is_finite() && radius_px > 0.0);
+        self.runner
+            .set_base_size(radius_px * 2.0 / DAB_REFERENCE_SIZE as f32);
+        self.record.color = color;
+        self.place_dab(
+            &PaintInformation {
+                pos,
+                ..Default::default()
+            },
+            gpu,
+            self.dab_count as usize,
+        );
+        self.runner.flush_dabs(gpu);
+    }
+
+    /// Reserve this stroke for a fixed-colour canonical dab stream.
+    ///
+    /// A canonical stream cannot be mixed with an already-rendered ordinary
+    /// stroke, and maximum coverage only reproduces DoughDraw's union when
+    /// every dab uses the same straight RGBA colour.
+    pub fn begin_canonical_color(&mut self, color_rgba8: [u8; 4]) -> bool {
+        match self.canonical_color_rgba8 {
+            Some(existing) => existing == color_rgba8,
+            None if self.dab_count == 0 => {
+                self.canonical_color_rgba8 = Some(color_rgba8);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Delegate the stroke-start / rewind-boundary lifecycle hook to every
