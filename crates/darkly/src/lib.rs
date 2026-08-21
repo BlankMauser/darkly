@@ -14,6 +14,7 @@ pub mod document;
 pub mod engine;
 pub mod format;
 pub mod gpu;
+pub mod integrations;
 pub mod layer;
 pub mod mask;
 pub mod nodegraph;

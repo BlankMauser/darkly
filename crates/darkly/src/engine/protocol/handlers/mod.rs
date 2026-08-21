@@ -7,6 +7,7 @@ pub mod brush_library;
 pub mod brush_preview;
 pub mod clipboard;
 pub mod color_pick;
+pub mod doughdraw;
 pub mod floating;
 pub mod histogram;
 pub mod image_io;
@@ -28,6 +29,7 @@ pub fn registrations() -> Vec<RequestRegistration> {
     all.extend(brush_preview::registrations());
     all.extend(clipboard::registrations());
     all.extend(color_pick::registrations());
+    all.extend(doughdraw::registrations());
     all.extend(floating::registrations());
     all.extend(histogram::registrations());
     all.extend(image_io::registrations());
