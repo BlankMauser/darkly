@@ -148,6 +148,8 @@ mod tests {
             .ports
             .iter()
             .any(|port| { port.name == "coverage" && port.value == InputValue::Int(1) }));
+        let runner = brush::compile_graph(&graph).unwrap();
+        assert!(runner.compiled_brush().unwrap().brush_extent_extra_px > 0.5);
     }
 
     #[test]

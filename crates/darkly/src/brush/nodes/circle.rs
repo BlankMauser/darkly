@@ -335,6 +335,18 @@ impl BrushNodeEvaluator for ShapeEvaluator {
         let aspect_min = ctx.port_min_value("aspect").max(0.01);
         let aspect_max = ctx.port_max_value("aspect").max(0.01);
         let aniso_max = (1.0 / aspect_min).max(aspect_max).max(1.0);
-        ExtentContribution::Multiply(base * aniso_max)
+        let passthrough = base * aniso_max;
+        if ctx.port_enum("coverage") == 1 {
+            // The furthest 4×4 sample is 3/8 px from the fragment centre on
+            // each axis. The shared wrapper clips by radial distance before
+            // this node runs, so retain the diagonal halo or sub-50% edge
+            // coverage is discarded before it can be counted.
+            ExtentContribution::AddCanvasPixels {
+                passthrough,
+                added_px: 0.375 * std::f32::consts::SQRT_2,
+            }
+        } else {
+            ExtentContribution::Multiply(passthrough)
+        }
     }
 }
