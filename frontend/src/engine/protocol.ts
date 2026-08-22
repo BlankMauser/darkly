@@ -87,6 +87,7 @@ export class Engine {
     private readonly pending = new Map<number, Pending>();
     private nextId = 1;
     private drainScheduled = false;
+    private disposed = false;
     private readonly channel: MessageChannel;
 
     /** The typed, per-kind request surface — the only public request API.
@@ -114,6 +115,12 @@ export class Engine {
      *  with an {@link EngineError} on protocol/handler failure. Private: the
      *  only public request surface is the typed {@link api}. */
     #request<T = any>(kind: RequestKind, payload: object = {}, bytes?: Uint8Array): Promise<T> {
+        if (this.disposed) {
+            return Promise.reject({
+                kind: 'engine_error',
+                message: 'engine disposed',
+            } satisfies EngineError);
+        }
         const id = this.nextId++;
         const promise = new Promise<T>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
@@ -136,6 +143,7 @@ export class Engine {
      *  counters that used to be separate borrowing reads). `busy` is true when a
      *  re-entrant render couldn't get the borrow — caller must not reschedule. */
     render(timeSecs: number): FrameStatus {
+        if (this.disposed) throw new Error('ENGINE_DISPOSED');
         const status = this.handle.render(timeSecs) as FrameStatus;
         if (!status.busy && status.results) this.resolveResults(status.results);
         return status;
@@ -157,16 +165,29 @@ export class Engine {
 
     /** Release the underlying wasm handle (wasm-bindgen destructor). */
     free(): void {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.drainScheduled = false;
+        this.channel.port1.onmessage = null;
+        this.channel.port1.close();
+        this.channel.port2.close();
+        const error: EngineError = {
+            kind: 'engine_error',
+            message: 'engine disposed',
+        };
+        for (const pending of this.pending.values()) pending.reject(error);
+        this.pending.clear();
         this.handle.free();
     }
 
     private armDrain(): void {
-        if (this.drainScheduled) return;
+        if (this.disposed || this.drainScheduled) return;
         this.drainScheduled = true;
         this.channel.port2.postMessage(null);
     }
 
     private runScheduledDrain(): void {
+        if (this.disposed) return;
         this.drainScheduled = false;
         const out = this.handle.drain() as DrainResult;
         if (out.busy) {
