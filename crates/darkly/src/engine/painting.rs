@@ -1821,6 +1821,38 @@ impl DarklyEngine {
         }
     }
 
+    /// Abort the active stroke without creating an undo entry.
+    ///
+    /// DoughDraw owns the canonical stroke record and can cancel a pointer
+    /// gesture before that record is committed. Restore the lazy GPU snapshot
+    /// directly instead of ending the stroke and then trying to undo it; the
+    /// latter would leave a visible history operation in the mirror.
+    #[handler]
+    pub fn cancel_stroke(&mut self) {
+        let Some(layer_id) = self.active_stroke_layer.take() else {
+            return;
+        };
+        let snapshot = self.scratch_snapshot.take();
+        self.brush_stroke_engine = None;
+        self.stroke_buffer = None;
+        self.checkpoint_ring.clear();
+
+        if let (Some(snapshot), Some(frame)) = (
+            snapshot,
+            self.compositor
+                .node_texture(layer_id)
+                .map(|texture| texture.canvas_frame()),
+        ) {
+            if let Some(rect) = snapshot.saved.intersect(frame.canvas_extent) {
+                self.gpu.encode("stroke-cancel", |encoder| {
+                    self.region_scratch
+                        .restore_from_scratch(encoder, &snapshot, &frame, rect);
+                });
+            }
+        }
+        self.compositor.mark_dirty();
+    }
+
     // --- GPU erase helpers ---
 
     /// Clear layer pixels within the current selection via GPU erase pass.
