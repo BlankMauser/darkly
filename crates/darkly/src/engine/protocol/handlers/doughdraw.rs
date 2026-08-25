@@ -4,6 +4,7 @@ use crate::engine::protocol::{bad_payload, decode, RequestRegistration, Response
 use crate::integrations::doughdraw::{
     compile_brush_program_v1, DoughDrawBrushProgramError, DoughDrawBrushProgramV1,
     DoughDrawCanonicalRoundDabBatchV1, DoughDrawCanonicalRoundDabV1,
+    DoughDrawPackedCanonicalRoundDabBatchV1,
 };
 
 pub fn registrations() -> Vec<RequestRegistration> {
@@ -75,6 +76,31 @@ pub fn registrations() -> Vec<RequestRegistration> {
         })
         .send()
         .req::<DoughDrawCanonicalRoundDabBatchV1>()
+        .resp_literal(
+            "{ kind: 'applied'; backendId: 'darkly' } | { kind: 'rejected'; backendId: 'darkly'; reason: string }",
+        ),
+        RequestRegistration::new(
+            "doughdraw_canonical_round_dabs_packed",
+            |engine, payload, bytes| {
+                let header: DoughDrawPackedCanonicalRoundDabBatchV1 = decode(payload)?;
+                let batch = DoughDrawCanonicalRoundDabBatchV1::from_packed_v1(header, bytes)
+                    .map_err(bad_payload)?;
+                match engine.doughdraw_canonical_round_dabs(&batch) {
+                    Ok(()) => Ok(Response::json(json!({
+                        "kind": "applied",
+                        "backendId": "darkly",
+                    }))),
+                    Err(reason) => Ok(Response::json(json!({
+                        "kind": "rejected",
+                        "backendId": "darkly",
+                        "reason": reason,
+                    }))),
+                }
+            },
+        )
+        .send()
+        .bytes_in()
+        .req::<DoughDrawPackedCanonicalRoundDabBatchV1>()
         .resp_literal(
             "{ kind: 'applied'; backendId: 'darkly' } | { kind: 'rejected'; backendId: 'darkly'; reason: string }",
         ),

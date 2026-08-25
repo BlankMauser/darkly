@@ -66,9 +66,58 @@ pub struct DoughDrawCanonicalRoundDabBatchV1 {
     pub dabs: Vec<DoughDrawCanonicalRoundDabV1>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DoughDrawPackedCanonicalRoundDabBatchV1 {
+    pub count: u32,
+    pub color_rgba8: [u8; 4],
+}
+
 impl DoughDrawCanonicalRoundDabBatchV1 {
     pub fn single(dab: DoughDrawCanonicalRoundDabV1) -> Self {
         Self { dabs: vec![dab] }
+    }
+
+    pub fn from_packed_v1(
+        header: DoughDrawPackedCanonicalRoundDabBatchV1,
+        bytes: &[u8],
+    ) -> Result<Self, DoughDrawBrushProgramError> {
+        const DAB_WORDS: usize = 5;
+        const DAB_BYTES: usize = DAB_WORDS * size_of::<u32>();
+        let count = header.count as usize;
+        if count == 0
+            || count > MAX_DABS_PER_PHASE as usize
+            || bytes.len() != count * DAB_BYTES
+        {
+            return Err(DoughDrawBrushProgramError::Invalid(
+                "packed canonical dab batch",
+            ));
+        }
+        let mut dabs = Vec::with_capacity(count);
+        for record in bytes.chunks_exact(DAB_BYTES) {
+            let radius_q8 = u32::from_le_bytes(record[8..12].try_into().unwrap());
+            let radius_squared_q16 =
+                u32::from_le_bytes(record[12..16].try_into().unwrap());
+            if radius_q8.checked_mul(radius_q8) != Some(radius_squared_q16) {
+                return Err(DoughDrawBrushProgramError::Invalid(
+                    "packed canonical dab batch",
+                ));
+            }
+            dabs.push(DoughDrawCanonicalRoundDabV1 {
+                center_x_q8: i32::from_le_bytes(record[0..4].try_into().unwrap()),
+                center_y_q8: i32::from_le_bytes(record[4..8].try_into().unwrap()),
+                radius_q8,
+                opacity_u16: u32::from_le_bytes(record[16..20].try_into().unwrap())
+                    .try_into()
+                    .map_err(|_| {
+                        DoughDrawBrushProgramError::Invalid("packed canonical dab opacity")
+                    })?,
+                color_rgba8: header.color_rgba8,
+            });
+        }
+        let batch = Self { dabs };
+        batch.validate()?;
+        Ok(batch)
     }
 
     /// Validate the complete batch before it reaches the paint engine.
