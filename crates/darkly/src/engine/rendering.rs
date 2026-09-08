@@ -70,6 +70,17 @@ impl PickSource {
 /// the panel renders. Don't drift the literal in `thumbnails.ts`.
 pub const DEFAULT_THUMB_SIZE: u32 = 36;
 
+/// A host output cannot be used by the engine's configured presentation pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ExternalTexturePresentError {
+    #[error("output must be a non-empty single-layer, single-mip, single-sample 2D texture")]
+    Shape,
+    #[error("output format does not match the engine presentation format")]
+    Format,
+    #[error("output requires RENDER_ATTACHMENT and COPY_SRC usage")]
+    Usage,
+}
+
 #[handlers]
 impl DarklyEngine {
     // --- View transform ---
@@ -657,6 +668,40 @@ impl DarklyEngine {
 
     /// Render a frame. Returns true if animations need another frame.
     pub fn render(&mut self, time_secs: f32) -> bool {
+        self.render_frame(time_secs, None)
+    }
+
+    /// Submit the workspace image into a caller-owned texture on this engine's
+    /// device. The host must set view-transform screen dimensions to the output
+    /// extent and synchronize GPU readers before reusing or destroying it.
+    /// Every call writes the final image, even when the document is unchanged.
+    pub fn render_to_texture(
+        &mut self,
+        time_secs: f32,
+        target: &wgpu::Texture,
+    ) -> Result<bool, ExternalTexturePresentError> {
+        if target.dimension() != wgpu::TextureDimension::D2
+            || target.width() == 0
+            || target.height() == 0
+            || target.depth_or_array_layers() != 1
+            || target.mip_level_count() != 1
+            || target.sample_count() != 1
+        {
+            return Err(ExternalTexturePresentError::Shape);
+        }
+        if target.format() != self.gpu.surface_format() {
+            return Err(ExternalTexturePresentError::Format);
+        }
+        if !target
+            .usage()
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC)
+        {
+            return Err(ExternalTexturePresentError::Usage);
+        }
+        Ok(self.render_frame(time_secs, Some(target)))
+    }
+
+    fn render_frame(&mut self, time_secs: f32, target: Option<&wgpu::Texture>) -> bool {
         // Sub-phase wall-clock timing for the slow-frame log. Always
         // recorded into `self.last_frame_phases` even on fast frames — the
         // WASM bridge decides whether to emit; nominal cost is a handful
@@ -693,27 +738,29 @@ impl DarklyEngine {
             .pump_node_histogram(&self.gpu.device, &self.gpu.queue);
 
         // Headless mode (tests): poll pending ops but skip presentation.
-        let (surface, surface_config) = match (&self.gpu.surface, &self.gpu.surface_config) {
-            (Some(s), Some(c)) => (s, c),
-            _ => {
-                self.last_frame_phases = super::FrameRenderPhases {
-                    poll_us,
-                    thumb_us,
-                    anim_us: 0,
-                    compositor_us: 0,
-                };
-                return self.readbacks.has_pending()
-                    || self.compositor.has_pending_content_bounds()
-                    || self.compositor.has_pending_histogram()
-                    || self.diff_rect.is_pending()
-                    || self.recorder.needs_frames();
-            }
-        };
+        let surface = self
+            .gpu
+            .surface
+            .as_ref()
+            .zip(self.gpu.surface_config.as_ref());
+        if target.is_none() && surface.is_none() {
+            self.last_frame_phases = super::FrameRenderPhases {
+                poll_us,
+                thumb_us,
+                anim_us: 0,
+                compositor_us: 0,
+            };
+            return self.readbacks.has_pending()
+                || self.compositor.has_pending_content_bounds()
+                || self.compositor.has_pending_histogram()
+                || self.diff_rect.is_pending()
+                || self.recorder.needs_frames();
+        }
 
         // Skip rendering when the surface has zero dimensions (e.g. canvas
         // squeezed to 0 height by a UI panel).  WebGPU cannot create
         // 0-dimension textures and attempting to do so corrupts the device.
-        if surface_config.width == 0 || surface_config.height == 0 {
+        if target.is_none() && surface.is_some_and(|(_, c)| c.width == 0 || c.height == 0) {
             self.last_frame_phases = super::FrameRenderPhases {
                 poll_us,
                 thumb_us,
@@ -732,13 +779,22 @@ impl DarklyEngine {
         let anim_us = t_anim.elapsed().as_micros() as u64;
 
         let t_comp = web_time::Instant::now();
-        self.compositor.render(
-            &self.gpu.device,
-            &self.gpu.queue,
-            surface,
-            surface_config,
-            &mut self.doc,
-        );
+        if let Some(target) = target {
+            self.compositor.render_to_texture(
+                &self.gpu.device,
+                &self.gpu.queue,
+                target,
+                &mut self.doc,
+            );
+        } else if let Some((surface, surface_config)) = surface {
+            self.compositor.render(
+                &self.gpu.device,
+                &self.gpu.queue,
+                surface,
+                surface_config,
+                &mut self.doc,
+            );
+        }
         let compositor_us = t_comp.elapsed().as_micros() as u64;
 
         self.last_frame_phases = super::FrameRenderPhases {

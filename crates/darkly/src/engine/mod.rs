@@ -743,12 +743,13 @@ impl DarklyEngine {
         doc_width: u32,
         doc_height: u32,
     ) -> Self {
+        let presentation_alpha = gpu.presentation_alpha_policy();
         Self::new_with_tool_session_inner(
             gpu,
             tool_session,
             doc_width,
             doc_height,
-            PresentationAlphaPolicy::Opaque,
+            presentation_alpha,
         )
     }
 

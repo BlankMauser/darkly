@@ -85,10 +85,7 @@ impl DoughDrawCanonicalRoundDabBatchV1 {
         const DAB_WORDS: usize = 5;
         const DAB_BYTES: usize = DAB_WORDS * size_of::<u32>();
         let count = header.count as usize;
-        if count == 0
-            || count > MAX_DABS_PER_PHASE as usize
-            || bytes.len() != count * DAB_BYTES
-        {
+        if count == 0 || count > MAX_DABS_PER_PHASE as usize || bytes.len() != count * DAB_BYTES {
             return Err(DoughDrawBrushProgramError::Invalid(
                 "packed canonical dab batch",
             ));
@@ -96,8 +93,7 @@ impl DoughDrawCanonicalRoundDabBatchV1 {
         let mut dabs = Vec::with_capacity(count);
         for record in bytes.chunks_exact(DAB_BYTES) {
             let radius_q8 = u32::from_le_bytes(record[8..12].try_into().unwrap());
-            let radius_squared_q16 =
-                u32::from_le_bytes(record[12..16].try_into().unwrap());
+            let radius_squared_q16 = u32::from_le_bytes(record[12..16].try_into().unwrap());
             if radius_q8.checked_mul(radius_q8) != Some(radius_squared_q16) {
                 return Err(DoughDrawBrushProgramError::Invalid(
                     "packed canonical dab batch",

@@ -23,7 +23,12 @@ pub struct GpuContext {
     pub surface: Option<wgpu::Surface<'static>>,
     pub surface_config: Option<wgpu::SurfaceConfiguration>,
     presentation_alpha: PresentationAlphaPolicy,
+    headless_format: wgpu::TextureFormat,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("texture presentation requires RGBA8 or BGRA8 unorm, optionally sRGB")]
+pub struct TextureTargetFormatError;
 
 /// How the present shader must encode alpha for its configured surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +177,7 @@ impl GpuContext {
             surface: Some(surface),
             surface_config: Some(surface_config),
             presentation_alpha,
+            headless_format: wgpu::TextureFormat::Bgra8UnormSrgb,
         })
     }
 
@@ -249,6 +255,7 @@ impl GpuContext {
             surface: Some(surface),
             surface_config: Some(surface_config),
             presentation_alpha,
+            headless_format: wgpu::TextureFormat::Bgra8UnormSrgb,
         })
     }
 
@@ -261,6 +268,7 @@ impl GpuContext {
             surface: None,
             surface_config: None,
             presentation_alpha: PresentationAlphaPolicy::Opaque,
+            headless_format: wgpu::TextureFormat::Bgra8UnormSrgb,
         }
     }
 
@@ -273,7 +281,34 @@ impl GpuContext {
             surface: None,
             surface_config: None,
             presentation_alpha: PresentationAlphaPolicy::Opaque,
+            headless_format: wgpu::TextureFormat::Bgra8UnormSrgb,
         }
+    }
+
+    /// Configure presentation into caller-owned textures on this shared device.
+    /// Format and alpha policy must match the host's texture compositor.
+    /// Only filterable 8-bit RGBA/BGRA outputs are supported by this boundary.
+    pub fn new_texture_target(
+        gpu: Arc<GpuDevice>,
+        format: wgpu::TextureFormat,
+        alpha: PresentationAlphaPolicy,
+    ) -> Result<Self, TextureTargetFormatError> {
+        if !matches!(
+            format,
+            wgpu::TextureFormat::Rgba8Unorm
+                | wgpu::TextureFormat::Rgba8UnormSrgb
+                | wgpu::TextureFormat::Bgra8Unorm
+                | wgpu::TextureFormat::Bgra8UnormSrgb
+        ) {
+            return Err(TextureTargetFormatError);
+        }
+        Ok(Self {
+            gpu,
+            surface: None,
+            surface_config: None,
+            presentation_alpha: alpha,
+            headless_format: format,
+        })
     }
 
     /// Cheap clone of the underlying shared device handle. Use this when
@@ -284,7 +319,8 @@ impl GpuContext {
     }
 
     /// The alpha convention selected while this presentation surface was
-    /// configured. Headless contexts use [`PresentationAlphaPolicy::Opaque`].
+    /// configured. Ordinary headless contexts use [`PresentationAlphaPolicy::Opaque`];
+    /// texture targets use the host's declared policy.
     pub fn presentation_alpha_policy(&self) -> PresentationAlphaPolicy {
         self.presentation_alpha
     }
@@ -326,10 +362,9 @@ impl GpuContext {
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         match &self.surface_config {
             Some(config) => config.format,
-            // Headless fallback — Bgra8UnormSrgb is the most common desktop
-            // surface format, so pipelines compiled against it will match
-            // production behaviour.
-            None => wgpu::TextureFormat::Bgra8UnormSrgb,
+            // Ordinary headless contexts default to desktop sRGB; embedded
+            // texture targets explicitly select their host's output format.
+            None => self.headless_format,
         }
     }
 

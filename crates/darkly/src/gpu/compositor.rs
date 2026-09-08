@@ -4794,9 +4794,34 @@ impl Compositor {
                 return;
             }
         };
-        let surface_view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.present_to_texture(device, queue, &output.texture);
+        output.present();
+        perf::time_end("render-total");
+    }
+
+    /// Present into a validated host texture, including when a clean frame is
+    /// requested for a different buffer. Offscreen composition stays dirty-gated.
+    pub(crate) fn render_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::Texture,
+        doc: &mut Document,
+    ) {
+        self.veil_chain
+            .resize(device, queue, target.width(), target.height());
+        self.veil_chain.sync_resolution_scale(device, queue);
+        self.render_offscreen(device, queue, doc);
+        self.present_to_texture(device, queue, target);
+    }
+
+    fn present_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::Texture,
+    ) {
+        let surface_view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
         perf::time("present");
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -4829,15 +4854,13 @@ impl Compositor {
             let vw = self.veil_chain.viewport_size().0;
             let vh = self.veil_chain.viewport_size().1;
             self.tool_overlay
-                .encode_snapshot(&mut encoder, &output.texture, &surface_view, vw, vh);
+                .encode_snapshot(&mut encoder, target, &surface_view, vw, vh);
         }
 
         queue.submit(std::iter::once(encoder.finish()));
-        output.present();
         perf::time_end("present");
 
         self.finish_present();
-        perf::time_end("render-total");
     }
 }
 
