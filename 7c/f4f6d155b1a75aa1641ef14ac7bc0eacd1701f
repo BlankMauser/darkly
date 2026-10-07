@@ -1,0 +1,46 @@
+crates/darkly/src/gpu/compositor.rs
+  s_133d292e897f9a::t_a340afc623397b 4798
+crates/darkly/src/gpu/diff_rect.rs
+  s_133d292e897f9a::t_9a706e3102b600 144-147
+crates/darkly/src/gpu/content_bounds.rs
+  s_133d292e897f9a::t_9a706e3102b600 206-209
+crates/darkly/src/gpu/context.rs
+  s_133d292e897f9a::t_d85059b43b275b 151,241,401
+crates/darkly/src/gpu/test_utils.rs
+  s_133d292e897f9a::t_d85059b43b275b 16,51
+Cargo.toml
+  s_133d292e897f9a::t_9a706e3102b600 62,65-66
+  s_133d292e897f9a::t_d85059b43b275b 23,27,29
+crates/darkly/tests/dab_variation_scatter.rs
+  s_133d292e897f9a::t_a340afc623397b 110
+crates/darkly/src/gpu/histogram.rs
+  s_133d292e897f9a::t_9a706e3102b600 213-216,241-244,318-320
+crates/darkly/Cargo.toml
+  s_133d292e897f9a::t_9a706e3102b600 60
+crates/darkly/src/gpu/bbox.rs
+  s_133d292e897f9a::t_9a706e3102b600 57-60,126-128
+crates/darkly/src/gpu/readback.rs
+  s_133d292e897f9a::t_9a706e3102b600 175-177
+crates/darkly/src/gpu/region_store.rs
+  s_133d292e897f9a::t_9a706e3102b600 778-781
+crates/darkly/tests/profile_render.rs
+  s_133d292e897f9a::t_27150d3769005a 26
+Cargo.lock
+  s_133d292e897f9a::t_ac8d3fda751678 55,57,123,125,476,485,678,680,682-683,813,815,824,828,837-848,888-899,927-937,959,1185,1187,1190-1191,1196,1198,1201,1338,1340,1343,1348,1350,1353,1535,1537,1544,1554,1556,1561,1567,1569,1586,1588,1599,1601,1609,1611,1619,1621,1632,1634,1653,1655,1673,1675,1683,1703,1705,1714,1718,1737,1739,1746,1748,1755,1757,1764,1766,1780,1787,1791,1806,1820,1822,1830,1832,1838,1840
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7cf4f6d155b1a75aa1641ef14ac7bc0eacd1701f",
+  "prompts": {},
+  "sessions": {
+    "s_133d292e897f9a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a114e1-7f0e-7921-9ba7-c295261aa9f4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "BlankMauser <thomasluvan@gmail.com>"
+    }
+  }
+}
