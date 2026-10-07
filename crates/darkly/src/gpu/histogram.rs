@@ -210,7 +210,10 @@ impl HistogramPass {
             mapped_at_creation: true,
         });
         {
-            let mut mapping = storage_buf.slice(..).get_mapped_range_mut();
+            let mut mapping = storage_buf
+                .slice(..)
+                .get_mapped_range_mut()
+                .expect("exclusive mapped-at-creation buffer");
             mapping.copy_from_slice(&[0u8; HIST_LEN * 4]);
         }
         storage_buf.unmap();
@@ -235,7 +238,10 @@ impl HistogramPass {
             mapped_at_creation: true,
         });
         {
-            let mut mapping = param_buf.slice(..).get_mapped_range_mut();
+            let mut mapping = param_buf
+                .slice(..)
+                .get_mapped_range_mut()
+                .expect("exclusive mapped-at-creation buffer");
             mapping.copy_from_slice(bytemuck::bytes_of(&params));
         }
         param_buf.unmap();
@@ -309,7 +315,9 @@ impl HistogramPass {
                     let current_gen = self.generation.get(&p.layer_id).copied().unwrap_or(0);
                     if p.gen == current_gen {
                         let slice = p.staging.slice(..);
-                        let mapped = slice.get_mapped_range();
+                        let mapped = slice
+                            .get_mapped_range()
+                            .expect("completed exclusive buffer mapping");
                         let bins: Vec<u32> =
                             bytemuck::cast_slice::<u8, u32>(&mapped[..HIST_BYTES as usize])
                                 .to_vec();

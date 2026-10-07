@@ -13,6 +13,7 @@ pub fn test_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("no GPU adapter available for tests");
 
@@ -47,6 +48,7 @@ pub fn bench_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("no GPU adapter available for benches");
     let adapter_features = adapter.features();

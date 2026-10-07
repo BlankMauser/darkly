@@ -775,7 +775,10 @@ impl RegionScratch {
                     mapped_at_creation: true,
                 });
                 {
-                    let mut mapped = upload.slice(..).get_mapped_range_mut();
+                    let mut mapped = upload
+                        .slice(..)
+                        .get_mapped_range_mut()
+                        .expect("exclusive mapped-at-creation buffer");
                     let unpadded_row = unpadded_row_bytes as usize;
                     let padded_row = padded_row_bytes as usize;
                     if unpadded_row == padded_row {

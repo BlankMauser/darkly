@@ -141,7 +141,10 @@ impl DiffRectPass {
             mapped_at_creation: true,
         });
         {
-            let mut mapping = param_buf.slice(..).get_mapped_range_mut();
+            let mut mapping = param_buf
+                .slice(..)
+                .get_mapped_range_mut()
+                .expect("exclusive mapped-at-creation buffer");
             mapping.copy_from_slice(bytemuck::bytes_of(&params));
         }
         param_buf.unmap();

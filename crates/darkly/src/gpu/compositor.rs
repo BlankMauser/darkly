@@ -4795,7 +4795,7 @@ impl Compositor {
             }
         };
         self.present_to_texture(device, queue, &output.texture);
-        output.present();
+        queue.present(output);
         perf::time_end("render-total");
     }
 

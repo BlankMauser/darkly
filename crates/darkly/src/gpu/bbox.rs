@@ -54,7 +54,10 @@ impl BboxReduction {
             mapped_at_creation: true,
         });
         {
-            let mut mapping = storage.slice(..).get_mapped_range_mut();
+            let mut mapping = storage
+                .slice(..)
+                .get_mapped_range_mut()
+                .expect("exclusive mapped-at-creation buffer");
             mapping.copy_from_slice(bytemuck::bytes_of(&BOUNDS_INIT));
         }
         storage.unmap();
@@ -120,7 +123,9 @@ impl PendingBbox {
         match self.rx.as_ref().unwrap().try_recv().ok() {
             Some(Ok(())) => {
                 let slice = self.staging.slice(..);
-                let mapped = slice.get_mapped_range();
+                let mapped = slice
+                    .get_mapped_range()
+                    .expect("completed exclusive buffer mapping");
                 let raw: [u32; 4] = *bytemuck::from_bytes(&mapped[..BOUNDS_BYTES as usize]);
                 drop(mapped);
                 self.staging.unmap();
